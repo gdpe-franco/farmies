@@ -17,6 +17,8 @@
     "dev:api": "npm run dev --workspace @farmies/api",
     "supabase:start": "npm run supabase:start --workspace @farmies/supabase-cli",
     "supabase:stop": "npm run supabase:stop --workspace @farmies/supabase-cli",
+    "db:reset": "npm run db:reset --workspace @farmies/supabase-cli",
+    "db:test": "npm run db:test --workspace @farmies/supabase-cli",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",

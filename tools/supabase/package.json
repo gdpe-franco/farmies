@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "scripts": {
     "supabase:start": "supabase start --workdir ../..",
-    "supabase:stop": "supabase stop --workdir ../.."
+    "supabase:stop": "supabase stop --workdir ../..",
+    "db:reset": "supabase db reset --local --workdir ../..",
+    "db:test": "supabase test db --local --workdir ../.."
   },
   "devDependencies": {
     "supabase": "^2.117.0"

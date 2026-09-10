@@ -23,6 +23,8 @@ Local authentication uses the Supabase CLI, which starts Supabase Auth, PostgreS
 
 ```sh
 npm run supabase:start
+npm run db:reset
+npm run db:test
 npm run supabase:stop
 ```
 
