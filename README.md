@@ -4,7 +4,7 @@ Private shared farms for real-life friend groups.
 
 ## Local development
 
-Requirements: Docker with Compose. Android builds additionally require a host Android SDK.
+Requirements: Docker with Compose and Node.js 24. Android builds additionally require a host Android SDK.
 
 ```sh
 docker compose up --build
@@ -22,7 +22,11 @@ docker compose run --rm api npm run check
 Local authentication uses the Supabase CLI, which starts Supabase Auth, PostgreSQL, and Mailpit in Docker:
 
 ```sh
-supabase start
+npm run supabase:start
+npm run supabase:stop
 ```
 
-The Supabase project configuration is added in US-001B. Keep Android emulator and device commands on the host.
+- Studio: <http://localhost:54323>
+- Mailpit: <http://localhost:54324>
+
+Keep Android emulator and device commands on the host.

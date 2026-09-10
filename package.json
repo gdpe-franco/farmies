@@ -9,11 +9,14 @@
   "workspaces": [
     "apps/client",
     "apps/client/src-capacitor",
-    "apps/api"
+    "apps/api",
+    "tools/supabase"
   ],
   "scripts": {
     "dev:client": "npm run dev --workspace @farmies/client",
     "dev:api": "npm run dev --workspace @farmies/api",
+    "supabase:start": "npm run supabase:start --workspace @farmies/supabase-cli",
+    "supabase:stop": "npm run supabase:stop --workspace @farmies/supabase-cli",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",

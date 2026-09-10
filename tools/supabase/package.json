@@ -1,0 +1,12 @@
+{
+  "name": "@farmies/supabase-cli",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "supabase:start": "supabase start --workdir ../..",
+    "supabase:stop": "supabase stop --workdir ../.."
+  },
+  "devDependencies": {
+    "supabase": "^2.117.0"
+  }
+}
