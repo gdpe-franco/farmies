@@ -1,0 +1,37 @@
+{
+  "name": "farmies",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "npm@11.19.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "apps/client",
+    "apps/client/src-capacitor",
+    "apps/api"
+  ],
+  "scripts": {
+    "dev:client": "npm run dev --workspace @farmies/client",
+    "dev:api": "npm run dev --workspace @farmies/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run typecheck && npm run lint && npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.10.0",
+    "eslint-plugin-vue": "^10.11.0",
+    "globals": "^17.12.0",
+    "typescript-eslint": "^8.70.0"
+  },
+  "allowScripts": {
+    "@parcel/watcher@2.6.0": true,
+    "esbuild@0.28.1": true,
+    "workerd@1.20260908.1": true
+  },
+  "overrides": {
+    "sharp": "0.35.4"
+  }
+}

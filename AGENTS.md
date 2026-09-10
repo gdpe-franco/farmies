@@ -34,4 +34,4 @@ Use one Git history with npm workspaces at `apps/client` and `apps/api`. Dockeri
 - Add proportionate checks and run relevant typecheck, lint, test, and build commands before completion.
 - Record durable decisions in planning documents or ADRs. Never record secrets.
 - Keep `AGENTS.md` and future `README.md` files concise, operational, and free of duplicated PRD detail.
-- Commit only when asked; use Conventional Commits with the story or PRD ID.
+- Commit only when asked. Use Conventional Commits without bracketed story, PRD, or task identifiers.

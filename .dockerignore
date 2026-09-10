@@ -1,0 +1,9 @@
+.git
+.planning
+.vscode
+tasks
+node_modules
+**/dist
+**/.quasar
+**/.wrangler
+**/src-capacitor/node_modules

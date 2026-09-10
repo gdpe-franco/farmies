@@ -1,0 +1,22 @@
+services:
+  client:
+    build: .
+    command: npm run dev:client
+    ports:
+      - "9000:9000"
+    volumes:
+      - .:/workspace
+      - client_node_modules:/workspace/node_modules
+
+  api:
+    build: .
+    command: npm run dev:api
+    ports:
+      - "8787:8787"
+    volumes:
+      - .:/workspace
+      - api_node_modules:/workspace/node_modules
+
+volumes:
+  client_node_modules:
+  api_node_modules:

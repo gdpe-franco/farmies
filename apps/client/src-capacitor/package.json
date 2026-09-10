@@ -1,0 +1,12 @@
+{
+  "name": "@farmies/capacitor",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "@capacitor/core": "8.4.3"
+  },
+  "devDependencies": {
+    "@capacitor/android": "8.4.3",
+    "@capacitor/cli": "8.4.3"
+  }
+}

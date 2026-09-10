@@ -1,3 +1,12 @@
 .vscode/
 .planning/
 tasks/
+node_modules/
+dist/
+.quasar/
+.wrangler/
+.env
+.env.*
+!.env.example
+apps/client/src-capacitor/node_modules/
+apps/client/src-capacitor/www/
