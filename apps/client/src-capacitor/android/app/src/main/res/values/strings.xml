@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Farmies</string>
+    <string name="title_activity_main">Farmies</string>
+    <string name="package_name">com.farmies.app</string>
+    <string name="custom_url_scheme">com.farmies.app</string>
+</resources>

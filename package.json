@@ -8,7 +8,6 @@
   },
   "workspaces": [
     "apps/client",
-    "apps/client/src-capacitor",
     "apps/api",
     "tools/supabase"
   ],

@@ -5,8 +5,14 @@ import { z } from 'zod'
 
 import type { Locale } from '../i18n/messages'
 
-type AuthClient = Pick<SupabaseClient['auth'], 'getSession' | 'onAuthStateChange' | 'signOut'>
+type AuthClient = Pick<
+  SupabaseClient['auth'],
+  'getSession' | 'onAuthStateChange' | 'signInWithOtp' | 'signOut' | 'verifyOtp'
+>
 type SessionError = 'SESSION_RESTORE_FAILED' | 'USER_LOAD_FAILED'
+
+export const emailSchema = z.string().trim().toLowerCase().pipe(z.email())
+export const emailCodeSchema = z.string().regex(/^\d{6}$/)
 
 const userResponseSchema = z.object({
   user: z.object({
@@ -22,6 +28,8 @@ export const useSessionStore = defineStore('session', () => {
   const user = ref<z.infer<typeof userResponseSchema>['user'] | null>(null)
   const initialized = ref(false)
   const error = ref<SessionError | null>(null)
+  const pendingEmail = ref<string | null>(null)
+  const resendAvailableAt = ref(0)
   const isAuthenticated = computed(() => accessToken.value !== null)
 
   let auth: AuthClient | undefined
@@ -96,6 +104,40 @@ export const useSessionStore = defineStore('session', () => {
     const { error: signOutError } = await auth.signOut({ scope: 'local' })
     if (signOutError) throw signOutError
     clear()
+    pendingEmail.value = null
+    resendAvailableAt.value = 0
+  }
+
+  const requestEmailCode = async (value: string) => {
+    if (!auth) throw new Error('Authentication is not initialized')
+    if (Date.now() < resendAvailableAt.value) throw new Error('Email code cooldown is active')
+
+    const email = emailSchema.parse(value)
+    const { error: requestError } = await auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: true },
+    })
+    if (requestError) throw requestError
+
+    pendingEmail.value = email
+    resendAvailableAt.value = Date.now() + 60_000
+  }
+
+  const verifyEmailCode = async (value: string) => {
+    if (!auth || !pendingEmail.value) throw new Error('No email code is pending')
+
+    const token = emailCodeSchema.parse(value)
+    const { error: verificationError } = await auth.verifyOtp({
+      email: pendingEmail.value,
+      token,
+      type: 'email',
+    })
+    if (verificationError) throw verificationError
+  }
+
+  const changeEmail = () => {
+    pendingEmail.value = null
+    resendAvailableAt.value = 0
   }
 
   const updateLocale = async (preferredLocale: Locale) => {
@@ -113,10 +155,15 @@ export const useSessionStore = defineStore('session', () => {
     user,
     initialized,
     error,
+    pendingEmail,
+    resendAvailableAt,
     isAuthenticated,
     initialize,
     request,
     signOut,
+    requestEmailCode,
+    verifyEmailCode,
+    changeEmail,
     updateLocale,
   }
 })

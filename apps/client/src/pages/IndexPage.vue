@@ -1,14 +1,11 @@
 <template>
-  <q-page class="column flex-center q-pa-lg text-center">
+  <main class="column items-center q-pa-md q-pa-sm-xl window-height">
     <h1 class="text-h2 q-my-sm">
       Farmies
     </h1>
-    <p class="text-body1">
-      {{ t('home.ready') }}
-    </p>
     <label
       for="locale"
-      class="text-body2 q-mt-md"
+      class="text-body2 q-mt-sm"
     >{{ t('language.label') }}</label>
     <select
       id="locale"
@@ -23,12 +20,14 @@
         {{ t('language.spanish') }}
       </option>
     </select>
-  </q-page>
+    <email-code-form class="q-mt-lg" />
+  </main>
 </template>
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 
+import EmailCodeForm from '../components/EmailCodeForm.vue'
 import { isLocale } from '../i18n/messages'
 import { useLocaleStore } from '../stores/locale'
 

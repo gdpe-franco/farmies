@@ -36,3 +36,7 @@ npm run supabase:stop
 - Mailpit: <http://localhost:54324>
 
 Keep Android emulator and device commands on the host.
+
+```sh
+npm exec --workspace @farmies/client -- quasar build -m capacitor -T android
+```
