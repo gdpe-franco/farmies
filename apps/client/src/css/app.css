@@ -1,3 +1,46 @@
+:root {
+  --farmies-background: #fff8e7;
+  --farmies-surface: #ffffff;
+  --farmies-text: #17351f;
+  --farmies-border: #bfd0b9;
+  --farmies-yellow: #f4c95d;
+}
+
 body {
   margin: 0;
+  color: var(--farmies-text);
+  background: var(--farmies-background);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.farmies-page {
+  background:
+    radial-gradient(circle at top, color-mix(in srgb, var(--farmies-yellow) 45%, transparent), transparent 24rem),
+    var(--farmies-background);
+}
+
+.farmies-wordmark {
+  color: var(--q-primary);
+  font-family: ui-rounded, "Arial Rounded MT Bold", system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.farmies-card {
+  border: 1px solid var(--farmies-border);
+  border-radius: 1.25rem;
+  background: var(--farmies-surface);
+  box-shadow: 0 0.75rem 2rem rgb(23 53 31 / 12%);
+}
+
+.farmies-select {
+  border: 1px solid var(--farmies-border);
+  border-radius: 0.5rem;
+  color: var(--farmies-text);
+  background: var(--farmies-surface);
+}
+
+:focus-visible {
+  outline: 3px solid var(--q-accent);
+  outline-offset: 3px;
 }

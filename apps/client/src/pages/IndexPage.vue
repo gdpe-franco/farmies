@@ -1,6 +1,6 @@
 <template>
-  <main class="column items-center q-pa-md q-pa-sm-xl window-height">
-    <h1 class="text-h2 q-my-sm">
+  <main class="farmies-page column items-center q-pa-md q-pa-sm-xl window-height">
+    <h1 class="farmies-wordmark text-h2 q-my-sm">
       Farmies
     </h1>
     <label
@@ -9,7 +9,7 @@
     >{{ t('language.label') }}</label>
     <select
       id="locale"
-      class="q-pa-sm q-mt-xs"
+      class="farmies-select q-pa-sm q-mt-xs"
       :value="localeStore.locale"
       @change="changeLocale"
     >

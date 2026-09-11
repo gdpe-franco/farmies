@@ -1,5 +1,5 @@
 <template>
-  <q-card class="auth-card">
+  <q-card class="auth-card farmies-card">
     <q-card-section>
       <h2 class="text-h5 q-my-sm">
         {{ t('authentication.title') }}
