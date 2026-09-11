@@ -3,6 +3,8 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { z } from 'zod'
 
+import type { Locale } from '../i18n/messages'
+
 type AuthClient = Pick<SupabaseClient['auth'], 'getSession' | 'onAuthStateChange' | 'signOut'>
 type SessionError = 'SESSION_RESTORE_FAILED' | 'USER_LOAD_FAILED'
 
@@ -96,5 +98,25 @@ export const useSessionStore = defineStore('session', () => {
     clear()
   }
 
-  return { accessToken, user, initialized, error, isAuthenticated, initialize, request, signOut }
+  const updateLocale = async (preferredLocale: Locale) => {
+    const response = await request('/users/me', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preferredLocale }),
+    })
+    if (!response.ok) throw new Error('Locale update failed')
+    user.value = userResponseSchema.parse(await response.json()).user
+  }
+
+  return {
+    accessToken,
+    user,
+    initialized,
+    error,
+    isAuthenticated,
+    initialize,
+    request,
+    signOut,
+    updateLocale,
+  }
 })

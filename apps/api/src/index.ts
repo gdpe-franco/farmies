@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
@@ -27,12 +27,26 @@ type ApplicationUser = {
 }
 
 type FindOrCreateUser = (bindings: Bindings, authUserId: string) => Promise<ApplicationUser | undefined>
+type UpdateUserLocale = (
+  bindings: Bindings,
+  authUserId: string,
+  preferredLocale: 'en' | 'es',
+) => Promise<ApplicationUser | undefined>
+
+type Dependencies = {
+  findOrCreateUser: FindOrCreateUser
+  updateUserLocale: UpdateUserLocale
+}
 
 const claimsSchema = z.object({
   sub: z.uuid(),
   exp: z.number().int(),
   role: z.literal('authenticated'),
 })
+
+const localeRequestSchema = z.object({
+  preferredLocale: z.enum(['en', 'es']),
+}).strict()
 
 const userFields = {
   id: users.id,
@@ -70,7 +84,39 @@ const findOrCreateUser: FindOrCreateUser = async (bindings, authUserId) => {
   }
 }
 
-export const createApp = (getUser: FindOrCreateUser = findOrCreateUser) => {
+const updateUserLocale: UpdateUserLocale = async (bindings, authUserId, preferredLocale) => {
+  const client = postgres(bindings.HYPERDRIVE.connectionString, {
+    max: 1,
+    fetch_types: false,
+    prepare: true,
+  })
+  const database = drizzle(client)
+
+  try {
+    const [user] = await database
+      .update(users)
+      .set({ preferredLocale, updatedAt: sql`now()` })
+      .where(and(eq(users.authUserId, authUserId), isNull(users.deletedAt)))
+      .returning(userFields)
+
+    return user
+  } finally {
+    await client.end()
+  }
+}
+
+const serializeUser = (user: ApplicationUser) => ({
+  user: {
+    id: user.id.toString(),
+    preferredLocale: user.preferredLocale,
+    createdAt: user.createdAt.toISOString(),
+    updatedAt: user.updatedAt.toISOString(),
+  },
+})
+
+export const createApp = (dependencies: Partial<Dependencies> = {}) => {
+  const getUser = dependencies.findOrCreateUser ?? findOrCreateUser
+  const setUserLocale = dependencies.updateUserLocale ?? updateUserLocale
   const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
   app.get('/health', (context) => context.json({ status: 'ok' }))
@@ -78,8 +124,8 @@ export const createApp = (getUser: FindOrCreateUser = findOrCreateUser) => {
   app.use('/users/*', async (context, next) =>
     cors({
       origin: context.env.CLIENT_ORIGIN,
-      allowHeaders: ['Authorization'],
-      allowMethods: ['PUT', 'OPTIONS'],
+      allowHeaders: ['Authorization', 'Content-Type'],
+      allowMethods: ['PUT', 'PATCH', 'OPTIONS'],
       maxAge: 600,
     })(context, next),
   )
@@ -117,14 +163,22 @@ export const createApp = (getUser: FindOrCreateUser = findOrCreateUser) => {
     const user = await getUser(context.env, context.get('authUserId'))
     if (!user) return unauthorized()
 
-    return context.json({
-      user: {
-        id: user.id.toString(),
-        preferredLocale: user.preferredLocale,
-        createdAt: user.createdAt.toISOString(),
-        updatedAt: user.updatedAt.toISOString(),
-      },
-    })
+    return context.json(serializeUser(user))
+  })
+
+  app.patch('/users/me', async (context) => {
+    const body = await context.req.json().catch(() => undefined)
+    const result = localeRequestSchema.safeParse(body)
+    if (!result.success) return context.json({ error: 'INVALID_REQUEST' }, 400)
+
+    const user = await setUserLocale(
+      context.env,
+      context.get('authUserId'),
+      result.data.preferredLocale,
+    )
+    if (!user) return unauthorized()
+
+    return context.json(serializeUser(user))
   })
 
   return app

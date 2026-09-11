@@ -38,7 +38,10 @@ const createFetcher = (status = 200) => {
   const requests = []
   const fetcher = async (input, init) => {
     requests.push({ url: String(input), init })
-    return Response.json({ user: applicationUser }, { status })
+    const preferredLocale = init.method === 'PATCH'
+      ? JSON.parse(init.body).preferredLocale
+      : applicationUser.preferredLocale
+    return Response.json({ user: { ...applicationUser, preferredLocale } }, { status })
   }
 
   return { fetcher, requests }
@@ -50,6 +53,7 @@ test('session store', async (suite) => {
       name: 'restores a session and authorizes Worker requests',
       signOut: false,
       refreshedToken: null,
+      selectedLocale: null,
       expectedToken: 'valid-token',
       expectedUser: applicationUser,
       expectedRequestTokens: ['Bearer valid-token'],
@@ -58,6 +62,7 @@ test('session store', async (suite) => {
       name: 'follows a refreshed Supabase session',
       signOut: false,
       refreshedToken: 'refreshed-token',
+      selectedLocale: null,
       expectedToken: 'refreshed-token',
       expectedUser: applicationUser,
       expectedRequestTokens: ['Bearer valid-token', 'Bearer refreshed-token'],
@@ -66,9 +71,19 @@ test('session store', async (suite) => {
       name: 'signs out locally and clears protected state',
       signOut: true,
       refreshedToken: null,
+      selectedLocale: null,
       expectedToken: null,
       expectedUser: null,
       expectedRequestTokens: ['Bearer valid-token'],
+    },
+    {
+      name: 'stores a selected locale on the application user',
+      signOut: false,
+      refreshedToken: null,
+      selectedLocale: 'es',
+      expectedToken: 'valid-token',
+      expectedUser: { ...applicationUser, preferredLocale: 'es' },
+      expectedRequestTokens: ['Bearer valid-token', 'Bearer valid-token'],
     },
   ]
 
@@ -85,6 +100,7 @@ test('session store', async (suite) => {
           auth.emit('TOKEN_REFRESHED', { access_token: testCase.refreshedToken })
           await new Promise(setImmediate)
         }
+        if (testCase.selectedLocale) await store.updateLocale(testCase.selectedLocale)
         if (testCase.signOut) await store.signOut()
 
         assert.equal(store.initialized, true)
@@ -97,6 +113,10 @@ test('session store', async (suite) => {
         assert.deepEqual(
           api.requests.map(({ init }) => new Headers(init.headers).get('Authorization')),
           testCase.expectedRequestTokens,
+        )
+        assert.deepEqual(
+          api.requests.map(({ init }) => init.method),
+          testCase.selectedLocale ? ['PUT', 'PATCH'] : testCase.expectedRequestTokens.map(() => 'PUT'),
         )
         assert.deepEqual(auth.signOutCalls, testCase.signOut ? [{ scope: 'local' }] : [])
       })

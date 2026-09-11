@@ -31,7 +31,7 @@ const createToken = async (privateKey, overrides = {}) => {
   return `${unsigned}.${Buffer.from(signature).toString('base64url')}`
 }
 
-test('PUT /users/me', async (suite) => {
+test('users endpoints', async (suite) => {
   const keys = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
   const publicKey = await crypto.subtle.exportKey('jwk', keys.publicKey)
   const originalFetch = globalThis.fetch
@@ -45,14 +45,23 @@ test('PUT /users/me', async (suite) => {
   })
 
   const requestedIds = []
-  const app = createApp(async (_bindings, id) => {
-    requestedIds.push(id)
-    return {
-      id: 42n,
-      preferredLocale: 'en',
-      createdAt: new Date('2026-09-10T12:00:00.000Z'),
-      updatedAt: new Date('2026-09-10T12:30:00.000Z'),
-    }
+  const localeUpdates = []
+  const user = {
+    id: 42n,
+    preferredLocale: 'en',
+    createdAt: new Date('2026-09-10T12:00:00.000Z'),
+    updatedAt: new Date('2026-09-10T12:30:00.000Z'),
+  }
+  const app = createApp({
+    findOrCreateUser: async (_bindings, id) => {
+      requestedIds.push(id)
+      return user
+    },
+    updateUserLocale: async (_bindings, id, preferredLocale) => {
+      requestedIds.push(id)
+      localeUpdates.push(preferredLocale)
+      return { ...user, preferredLocale }
+    },
   })
   const bindings = {
     CLIENT_ORIGIN: 'https://farmies.test',
@@ -67,12 +76,28 @@ test('PUT /users/me', async (suite) => {
   const happyCases = [
     {
       name: 'returns the application user for a valid token',
+      method: 'PUT',
       authorization: `Bearer ${validToken}`,
       status: 200,
       body: {
         user: {
           id: '42',
           preferredLocale: 'en',
+          createdAt: '2026-09-10T12:00:00.000Z',
+          updatedAt: '2026-09-10T12:30:00.000Z',
+        },
+      },
+    },
+    {
+      name: 'stores a supported locale for the verified user',
+      method: 'PATCH',
+      authorization: `Bearer ${validToken}`,
+      requestBody: { preferredLocale: 'es' },
+      status: 200,
+      body: {
+        user: {
+          id: '42',
+          preferredLocale: 'es',
           createdAt: '2026-09-10T12:00:00.000Z',
           updatedAt: '2026-09-10T12:30:00.000Z',
         },
@@ -86,8 +111,13 @@ test('PUT /users/me', async (suite) => {
         const response = await app.request(
           '/users/me',
           {
-            method: 'PUT',
-            headers: { Authorization: testCase.authorization, Origin: bindings.CLIENT_ORIGIN },
+            method: testCase.method,
+            headers: {
+              Authorization: testCase.authorization,
+              Origin: bindings.CLIENT_ORIGIN,
+              ...(testCase.requestBody ? { 'Content-Type': 'application/json' } : {}),
+            },
+            body: testCase.requestBody ? JSON.stringify(testCase.requestBody) : undefined,
           },
           bindings,
         )
@@ -96,34 +126,53 @@ test('PUT /users/me', async (suite) => {
         assert.equal(response.headers.get('Access-Control-Allow-Origin'), bindings.CLIENT_ORIGIN)
         assert.deepEqual(await response.json(), testCase.body)
         assert.equal(jwksRequests[0], bindings.SUPABASE_JWKS_URL)
-        assert.deepEqual(requestedIds, [authUserId])
       })
     }
+    assert.deepEqual(requestedIds, [authUserId, authUserId])
+    assert.deepEqual(localeUpdates, ['es'])
   })
 
   const failureCases = [
-    { name: 'rejects missing authorization', authorization: undefined },
-    { name: 'rejects malformed authorization', authorization: 'not-a-bearer-token' },
+    { name: 'rejects missing authorization', authorization: undefined, method: 'PUT', status: 401 },
+    { name: 'rejects malformed authorization', authorization: 'not-a-bearer-token', method: 'PUT', status: 401 },
     {
       name: 'rejects the wrong issuer',
       authorization: `Bearer ${await createToken(keys.privateKey, { iss: 'https://attacker.invalid/auth/v1' })}`,
+      method: 'PUT',
+      status: 401,
     },
-    { name: 'rejects the wrong audience', authorization: `Bearer ${await createToken(keys.privateKey, { aud: 'anon' })}` },
-    { name: 'rejects an expired token', authorization: `Bearer ${await createToken(keys.privateKey, { exp: 1 })}` },
-    { name: 'rejects a missing expiry', authorization: `Bearer ${await createToken(keys.privateKey, { exp: undefined })}` },
-    { name: 'rejects the wrong role', authorization: `Bearer ${await createToken(keys.privateKey, { role: 'anon' })}` },
-    { name: 'rejects an invalid subject', authorization: `Bearer ${await createToken(keys.privateKey, { sub: 'not-a-uuid' })}` },
-    { name: 'rejects an invalid signature', authorization: `Bearer ${tamperedToken}` },
+    { name: 'rejects the wrong audience', authorization: `Bearer ${await createToken(keys.privateKey, { aud: 'anon' })}`, method: 'PUT', status: 401 },
+    { name: 'rejects an expired token', authorization: `Bearer ${await createToken(keys.privateKey, { exp: 1 })}`, method: 'PUT', status: 401 },
+    { name: 'rejects a missing expiry', authorization: `Bearer ${await createToken(keys.privateKey, { exp: undefined })}`, method: 'PUT', status: 401 },
+    { name: 'rejects the wrong role', authorization: `Bearer ${await createToken(keys.privateKey, { role: 'anon' })}`, method: 'PUT', status: 401 },
+    { name: 'rejects an invalid subject', authorization: `Bearer ${await createToken(keys.privateKey, { sub: 'not-a-uuid' })}`, method: 'PUT', status: 401 },
+    { name: 'rejects an invalid signature', authorization: `Bearer ${tamperedToken}`, method: 'PUT', status: 401 },
+    {
+      name: 'rejects an unsupported locale',
+      authorization: `Bearer ${validToken}`,
+      method: 'PATCH',
+      requestBody: { preferredLocale: 'fr' },
+      status: 400,
+    },
   ]
 
   await suite.test('failure path', async (failurePath) => {
     for (const testCase of failureCases) {
       await failurePath.test(testCase.name, async () => {
-        const headers = testCase.authorization ? { Authorization: testCase.authorization } : undefined
-        const response = await app.request('/users/me', { method: 'PUT', headers }, bindings)
+        const headers = testCase.authorization
+          ? {
+              Authorization: testCase.authorization,
+              ...(testCase.requestBody ? { 'Content-Type': 'application/json' } : {}),
+            }
+          : undefined
+        const response = await app.request('/users/me', {
+          method: testCase.method,
+          headers,
+          body: testCase.requestBody ? JSON.stringify(testCase.requestBody) : undefined,
+        }, bindings)
 
-        assert.equal(response.status, 401)
-        assert.deepEqual(requestedIds, [authUserId])
+        assert.equal(response.status, testCase.status)
+        assert.deepEqual(requestedIds, [authUserId, authUserId])
       })
     }
   })
