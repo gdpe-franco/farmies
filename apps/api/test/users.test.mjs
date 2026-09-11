@@ -55,6 +55,7 @@ test('PUT /users/me', async (suite) => {
     }
   })
   const bindings = {
+    CLIENT_ORIGIN: 'https://farmies.test',
     SUPABASE_JWKS_URL: 'https://jwks.internal/auth/v1/.well-known/jwks.json',
     SUPABASE_URL: 'https://example.supabase.co',
   }
@@ -84,11 +85,15 @@ test('PUT /users/me', async (suite) => {
       await happyPath.test(testCase.name, async () => {
         const response = await app.request(
           '/users/me',
-          { method: 'PUT', headers: { Authorization: testCase.authorization } },
+          {
+            method: 'PUT',
+            headers: { Authorization: testCase.authorization, Origin: bindings.CLIENT_ORIGIN },
+          },
           bindings,
         )
 
         assert.equal(response.status, testCase.status)
+        assert.equal(response.headers.get('Access-Control-Allow-Origin'), bindings.CLIENT_ORIGIN)
         assert.deepEqual(await response.json(), testCase.body)
         assert.equal(jwksRequests[0], bindings.SUPABASE_JWKS_URL)
         assert.deepEqual(requestedIds, [authUserId])

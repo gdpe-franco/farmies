@@ -1,6 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 import { verifyWithJwks } from 'hono/jwt'
 import postgres from 'postgres'
 import { z } from 'zod'
@@ -8,6 +9,7 @@ import { z } from 'zod'
 import { users } from './db/schema.ts'
 
 type Bindings = {
+  CLIENT_ORIGIN: string
   HYPERDRIVE: Hyperdrive
   SUPABASE_JWKS_URL?: string
   SUPABASE_URL: string
@@ -72,6 +74,15 @@ export const createApp = (getUser: FindOrCreateUser = findOrCreateUser) => {
   const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
   app.get('/health', (context) => context.json({ status: 'ok' }))
+
+  app.use('/users/*', async (context, next) =>
+    cors({
+      origin: context.env.CLIENT_ORIGIN,
+      allowHeaders: ['Authorization'],
+      allowMethods: ['PUT', 'OPTIONS'],
+      maxAge: 600,
+    })(context, next),
+  )
 
   app.use('/users/me', async (context, next) => {
     const authorization = context.req.header('Authorization')

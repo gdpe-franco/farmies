@@ -8,6 +8,7 @@ Requirements: Docker with Compose and Node.js 24. Android builds additionally re
 
 ```sh
 cp apps/api/.env.example apps/api/.env
+cp apps/client/.env.example apps/client/.env
 docker compose up --build
 ```
 
