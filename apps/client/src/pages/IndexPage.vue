@@ -20,7 +20,14 @@
         {{ t('language.spanish') }}
       </option>
     </select>
-    <email-code-form class="q-mt-lg" />
+    <party-creation-form
+      v-if="session.user"
+      class="q-mt-lg"
+    />
+    <email-code-form
+      v-else
+      class="q-mt-lg"
+    />
   </main>
 </template>
 
@@ -28,11 +35,14 @@
 import { useI18n } from 'vue-i18n'
 
 import EmailCodeForm from '../components/EmailCodeForm.vue'
+import PartyCreationForm from '../components/PartyCreationForm.vue'
 import { isLocale } from '../i18n/messages'
 import { useLocaleStore } from '../stores/locale'
+import { useSessionStore } from '../stores/session'
 
 const { t } = useI18n()
 const localeStore = useLocaleStore()
+const session = useSessionStore()
 
 const changeLocale = (event: Event) => {
   const value = (event.target as HTMLSelectElement).value

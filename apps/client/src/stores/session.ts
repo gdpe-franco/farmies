@@ -11,6 +11,8 @@ type AuthClient = Pick<
 >
 type SessionError = 'SESSION_RESTORE_FAILED' | 'USER_LOAD_FAILED'
 
+export type PartyCreationError = 'ALREADY_IN_PARTY' | 'PARTY_CREATION_FAILED'
+
 export const emailSchema = z.string().trim().toLowerCase().pipe(z.email())
 export const emailCodeSchema = z.string().regex(/^\d{6}$/)
 
@@ -23,9 +25,28 @@ const userResponseSchema = z.object({
   }),
 })
 
+const partyResponseSchema = z.object({
+  party: z.object({
+    id: z.string().regex(/^\d+$/),
+    displayName: z.string(),
+    species: z.literal('COW'),
+    environment: z.literal('PASTURE'),
+    createdAt: z.iso.datetime(),
+  }),
+  membership: z.object({
+    id: z.string().regex(/^\d+$/),
+    nickname: z.string(),
+    joinedAt: z.iso.datetime(),
+  }),
+})
+
+export const partyNameSchema = z.string().trim().min(1).max(60)
+export const nicknameSchema = z.string().trim().min(1).max(40)
+
 export const useSessionStore = defineStore('session', () => {
   const accessToken = ref<string | null>(null)
   const user = ref<z.infer<typeof userResponseSchema>['user'] | null>(null)
+  const party = ref<z.infer<typeof partyResponseSchema> | null>(null)
   const initialized = ref(false)
   const error = ref<SessionError | null>(null)
   const pendingEmail = ref<string | null>(null)
@@ -39,6 +60,7 @@ export const useSessionStore = defineStore('session', () => {
   const clear = () => {
     accessToken.value = null
     user.value = null
+    party.value = null
     error.value = null
   }
 
@@ -150,9 +172,29 @@ export const useSessionStore = defineStore('session', () => {
     user.value = userResponseSchema.parse(await response.json()).user
   }
 
+  const createParty = async (displayNameValue: string, nicknameValue: string) => {
+    const displayName = partyNameSchema.parse(displayNameValue)
+    const nickname = nicknameSchema.parse(nicknameValue)
+    const response = await request('/parties', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayName, nickname }),
+    })
+
+    if (!response.ok) {
+      const code: PartyCreationError = response.status === 409
+        ? 'ALREADY_IN_PARTY'
+        : 'PARTY_CREATION_FAILED'
+      throw new Error(code)
+    }
+
+    party.value = partyResponseSchema.parse(await response.json())
+  }
+
   return {
     accessToken,
     user,
+    party,
     initialized,
     error,
     pendingEmail,
@@ -165,5 +207,6 @@ export const useSessionStore = defineStore('session', () => {
     verifyEmailCode,
     changeEmail,
     updateLocale,
+    createParty,
   }
 })

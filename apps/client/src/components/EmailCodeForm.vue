@@ -5,20 +5,8 @@
         {{ t('authentication.title') }}
       </h2>
 
-      <template v-if="session.user">
-        <p role="status">
-          {{ t('authentication.signedIn') }}
-        </p>
-        <q-btn
-          color="primary"
-          :label="t('authentication.signOut')"
-          :loading="loading"
-          @click="signOut"
-        />
-      </template>
-
       <div
-        v-else-if="session.isAuthenticated && !session.error"
+        v-if="session.isAuthenticated && !session.error"
         class="row items-center q-gutter-sm"
         aria-live="polite"
         aria-busy="true"

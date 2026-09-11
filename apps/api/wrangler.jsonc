@@ -2,5 +2,13 @@
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "farmies-api",
   "main": "src/index.ts",
-  "compatibility_date": "2026-09-09"
+  "compatibility_date": "2026-09-09",
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      // Local development uses the ignored CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE value.
+      // Replace this placeholder with the deployed Hyperdrive configuration ID before deployment.
+      "id": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
 }

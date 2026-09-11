@@ -31,7 +31,7 @@ const createToken = async (privateKey, overrides = {}) => {
   return `${unsigned}.${Buffer.from(signature).toString('base64url')}`
 }
 
-test('users endpoints', async (suite) => {
+test('authorized API endpoints', async (suite) => {
   const keys = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
   const publicKey = await crypto.subtle.exportKey('jwk', keys.publicKey)
   const originalFetch = globalThis.fetch
@@ -46,6 +46,7 @@ test('users endpoints', async (suite) => {
 
   const requestedIds = []
   const localeUpdates = []
+  const partyRequests = []
   const user = {
     id: 42n,
     preferredLocale: 'en',
@@ -53,6 +54,30 @@ test('users endpoints', async (suite) => {
     updatedAt: new Date('2026-09-10T12:30:00.000Z'),
   }
   const app = createApp({
+    createParty: async (_bindings, id, input) => {
+      partyRequests.push({ id, input })
+      if (input.displayName === 'Existing Party') return { status: 'already_member' }
+      if (input.displayName === 'Missing User') return { status: 'user_not_found' }
+      if (input.displayName === 'Broken Party') throw new Error('database unavailable')
+
+      return {
+        status: 'created',
+        value: {
+          party: {
+            id: 84n,
+            displayName: input.displayName,
+            species: 'COW',
+            environment: 'PASTURE',
+            createdAt: new Date('2026-09-11T08:00:00.000Z'),
+          },
+          membership: {
+            id: 85n,
+            nickname: input.nickname,
+            joinedAt: new Date('2026-09-11T08:00:00.000Z'),
+          },
+        },
+      }
+    },
     findOrCreateUser: async (_bindings, id) => {
       requestedIds.push(id)
       return user
@@ -173,6 +198,111 @@ test('users endpoints', async (suite) => {
 
         assert.equal(response.status, testCase.status)
         assert.deepEqual(requestedIds, [authUserId, authUserId])
+      })
+    }
+  })
+
+  const partyHappyCases = [
+    {
+      name: 'creates a Party and its owner membership for the verified user',
+      requestBody: { displayName: '  Green Friends  ', nickname: '  Fern  ' },
+      expectedInput: { displayName: 'Green Friends', nickname: 'Fern' },
+      body: {
+        party: {
+          id: '84',
+          displayName: 'Green Friends',
+          species: 'COW',
+          environment: 'PASTURE',
+          createdAt: '2026-09-11T08:00:00.000Z',
+        },
+        membership: {
+          id: '85',
+          nickname: 'Fern',
+          joinedAt: '2026-09-11T08:00:00.000Z',
+        },
+      },
+    },
+  ]
+
+  await suite.test('Party happy path', async (happyPath) => {
+    for (const testCase of partyHappyCases) {
+      await happyPath.test(testCase.name, async () => {
+        const response = await app.request('/parties', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${validToken}`,
+            'Content-Type': 'application/json',
+            Origin: bindings.CLIENT_ORIGIN,
+          },
+          body: JSON.stringify(testCase.requestBody),
+        }, bindings)
+
+        assert.equal(response.status, 201)
+        assert.equal(response.headers.get('Access-Control-Allow-Origin'), bindings.CLIENT_ORIGIN)
+        assert.deepEqual(await response.json(), testCase.body)
+        assert.deepEqual(partyRequests.at(-1), { id: authUserId, input: testCase.expectedInput })
+      })
+    }
+  })
+
+  const partyFailureCases = [
+    {
+      name: 'rejects missing authorization',
+      authorization: undefined,
+      requestBody: { displayName: 'Green Friends', nickname: 'Fern' },
+      status: 401,
+      body: null,
+    },
+    {
+      name: 'rejects an empty Party name',
+      authorization: `Bearer ${validToken}`,
+      requestBody: { displayName: '   ', nickname: 'Fern' },
+      status: 400,
+      body: { error: 'INVALID_REQUEST' },
+    },
+    {
+      name: 'rejects a nickname longer than 40 characters',
+      authorization: `Bearer ${validToken}`,
+      requestBody: { displayName: 'Green Friends', nickname: 'x'.repeat(41) },
+      status: 400,
+      body: { error: 'INVALID_REQUEST' },
+    },
+    {
+      name: 'rejects a second active membership',
+      authorization: `Bearer ${validToken}`,
+      requestBody: { displayName: 'Existing Party', nickname: 'Fern' },
+      status: 409,
+      body: { error: 'ALREADY_IN_PARTY' },
+    },
+    {
+      name: 'rejects an authentication identity without an application user',
+      authorization: `Bearer ${validToken}`,
+      requestBody: { displayName: 'Missing User', nickname: 'Fern' },
+      status: 401,
+      body: null,
+    },
+    {
+      name: 'returns a stable error when creation fails',
+      authorization: `Bearer ${validToken}`,
+      requestBody: { displayName: 'Broken Party', nickname: 'Fern' },
+      status: 500,
+      body: { error: 'PARTY_CREATION_FAILED' },
+    },
+  ]
+
+  await suite.test('Party failure path', async (failurePath) => {
+    for (const testCase of partyFailureCases) {
+      await failurePath.test(testCase.name, async () => {
+        const response = await app.request('/parties', {
+          method: 'POST',
+          headers: testCase.authorization
+            ? { Authorization: testCase.authorization, 'Content-Type': 'application/json' }
+            : { 'Content-Type': 'application/json' },
+          body: JSON.stringify(testCase.requestBody),
+        }, bindings)
+
+        assert.equal(response.status, testCase.status)
+        if (testCase.body) assert.deepEqual(await response.json(), testCase.body)
       })
     }
   })

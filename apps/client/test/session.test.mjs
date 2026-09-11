@@ -53,10 +53,34 @@ const createAuth = ({
   }
 }
 
-const createFetcher = (status = 200) => {
+const createdParty = {
+  party: {
+    id: '84',
+    displayName: 'Green Friends',
+    species: 'COW',
+    environment: 'PASTURE',
+    createdAt: '2026-09-11T08:00:00.000Z',
+  },
+  membership: {
+    id: '85',
+    nickname: 'Fern',
+    joinedAt: '2026-09-11T08:00:00.000Z',
+  },
+}
+
+const createFetcher = (status = 200, partyStatus = 201) => {
   const requests = []
   const fetcher = async (input, init) => {
-    requests.push({ url: String(input), init })
+    const url = String(input)
+    requests.push({ url, init })
+    if (url.endsWith('/parties')) {
+      return partyStatus === 201
+        ? Response.json(createdParty, { status: 201 })
+        : Response.json(
+            { error: partyStatus === 409 ? 'ALREADY_IN_PARTY' : 'PARTY_CREATION_FAILED' },
+            { status: partyStatus },
+          )
+    }
     const preferredLocale = init.method === 'PATCH'
       ? JSON.parse(init.body).preferredLocale
       : applicationUser.preferredLocale
@@ -307,6 +331,99 @@ test('email code authentication', async (suite) => {
         assert.equal(auth.codeRequests.length, testCase.expectedCodeRequests)
         assert.equal(auth.verificationRequests.length, testCase.expectedVerificationRequests)
         assert.equal(store.user, null)
+      })
+    }
+  })
+})
+
+test('Party creation', async (suite) => {
+  const happyCases = [
+    {
+      name: 'creates a Party with normalized input and stores the response',
+      displayName: '  Green Friends  ',
+      nickname: '  Fern  ',
+      expectedBody: { displayName: 'Green Friends', nickname: 'Fern' },
+    },
+  ]
+
+  await suite.test('happy path', async (happyPath) => {
+    for (const testCase of happyCases) {
+      await happyPath.test(testCase.name, async () => {
+        setActivePinia(createPinia())
+        const auth = createAuth({ session: { access_token: 'valid-token' } })
+        const api = createFetcher()
+        const store = useSessionStore()
+        await store.initialize(auth.client, 'https://api.farmies.test', api.fetcher)
+
+        await store.createParty(testCase.displayName, testCase.nickname)
+
+        assert.deepEqual(store.party, createdParty)
+        const request = api.requests.at(-1)
+        assert.equal(request.url, 'https://api.farmies.test/parties')
+        assert.equal(request.init.method, 'POST')
+        assert.equal(new Headers(request.init.headers).get('Authorization'), 'Bearer valid-token')
+        assert.deepEqual(JSON.parse(request.init.body), testCase.expectedBody)
+
+        await store.signOut()
+        assert.equal(store.party, null)
+      })
+    }
+  })
+
+  const failureCases = [
+    {
+      name: 'rejects an empty Party name before calling the API',
+      displayName: '   ',
+      nickname: 'Fern',
+      partyStatus: 201,
+      error: /too_small/,
+      expectedPartyRequests: 0,
+    },
+    {
+      name: 'rejects an overlong nickname before calling the API',
+      displayName: 'Green Friends',
+      nickname: 'x'.repeat(41),
+      partyStatus: 201,
+      error: /too_big/,
+      expectedPartyRequests: 0,
+    },
+    {
+      name: 'reports an existing active membership',
+      displayName: 'Green Friends',
+      nickname: 'Fern',
+      partyStatus: 409,
+      error: /ALREADY_IN_PARTY/,
+      expectedPartyRequests: 1,
+    },
+    {
+      name: 'reports a general creation failure',
+      displayName: 'Green Friends',
+      nickname: 'Fern',
+      partyStatus: 500,
+      error: /PARTY_CREATION_FAILED/,
+      expectedPartyRequests: 1,
+    },
+  ]
+
+  await suite.test('failure path', async (failurePath) => {
+    for (const testCase of failureCases) {
+      await failurePath.test(testCase.name, async () => {
+        setActivePinia(createPinia())
+        const auth = createAuth({ session: { access_token: 'valid-token' } })
+        const api = createFetcher(200, testCase.partyStatus)
+        const store = useSessionStore()
+        await store.initialize(auth.client, 'https://api.farmies.test', api.fetcher)
+
+        await assert.rejects(
+          store.createParty(testCase.displayName, testCase.nickname),
+          testCase.error,
+        )
+
+        assert.equal(store.party, null)
+        assert.equal(
+          api.requests.filter(({ url }) => url.endsWith('/parties')).length,
+          testCase.expectedPartyRequests,
+        )
       })
     }
   })
