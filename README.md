@@ -7,11 +7,14 @@ Private shared farms for real-life friend groups.
 Requirements: Docker with Compose and Node.js 24. Android builds additionally require a host Android SDK.
 
 ```sh
+cp apps/api/.env.example apps/api/.env
 docker compose up --build
 ```
 
 - Client: <http://localhost:9000>
 - API health: <http://localhost:8787/health>
+
+Local values belong in the ignored app `.env` files. The Worker also requires a `HYPERDRIVE` binding; use Cloudflare variables, secrets, and bindings outside local development.
 
 Run checks in the project image:
 
