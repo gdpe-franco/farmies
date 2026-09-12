@@ -78,11 +78,17 @@ type ManageInvite = (
   authUserId: string,
   action: 'replace' | 'revoke',
 ) => Promise<ManageInviteResult>
+type InvitePreview = { displayName: string; occupancy: number }
+type FindInvitePreview = (
+  bindings: Bindings,
+  tokenHash: string,
+) => Promise<InvitePreview | undefined>
 
 type Dependencies = {
   createParty: CreateParty
   findCurrentParty: FindCurrentParty
   findOrCreateUser: FindOrCreateUser
+  findInvitePreview: FindInvitePreview
   manageInvite: ManageInvite
   updateUserLocale: UpdateUserLocale
 }
@@ -126,12 +132,14 @@ export const createInviteSecret = async () => {
     .replaceAll('+', '-')
     .replaceAll('/', '_')
     .replaceAll('=', '')
+  return { token, hash: await hashInviteToken(token) }
+}
+
+export const hashInviteToken = async (token: string) => {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
-  const hash = [...new Uint8Array(digest)]
+  return [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('')
-
-  return { token, hash }
 }
 
 const findOrCreateUser: FindOrCreateUser = async (bindings, authUserId) => {
@@ -353,6 +361,37 @@ const manageInvite: ManageInvite = async (bindings, authUserId, action) => {
   }
 }
 
+const findInvitePreview: FindInvitePreview = async (bindings, tokenHash) => {
+  const { client, database } = openDatabase(bindings)
+
+  try {
+    const [result] = await database
+      .select({
+        displayName: parties.displayName,
+        occupancy: sql<number>`count(${memberships.id})`,
+      })
+      .from(invites)
+      .innerJoin(parties, and(eq(parties.id, invites.partyId), isNull(parties.deletedAt)))
+      .leftJoin(
+        memberships,
+        and(eq(memberships.partyId, parties.id), isNull(memberships.deletedAt)),
+      )
+      .where(and(
+        eq(invites.tokenHash, tokenHash),
+        isNull(invites.revokedAt),
+        isNull(invites.deletedAt),
+        gt(invites.expiresAt, sql`now()`),
+      ))
+      .groupBy(parties.id, parties.displayName)
+      .limit(1)
+
+    if (!result || Number(result.occupancy) >= 10) return undefined
+    return { displayName: result.displayName, occupancy: Number(result.occupancy) }
+  } finally {
+    await client.end()
+  }
+}
+
 const serializeUser = (user: ApplicationUser) => ({
   user: {
     id: user.id.toString(),
@@ -381,6 +420,7 @@ const serializeParty = ({ party, membership, isOwner, inviteActive }: PartyMembe
 
 export const createApp = (dependencies: Partial<Dependencies> = {}) => {
   const addParty = dependencies.createParty ?? createParty
+  const getInvitePreview = dependencies.findInvitePreview ?? findInvitePreview
   const getCurrentParty = dependencies.findCurrentParty ?? findCurrentParty
   const getUser = dependencies.findOrCreateUser ?? findOrCreateUser
   const updateInvite = dependencies.manageInvite ?? manageInvite
@@ -448,9 +488,19 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     })(context, next),
   )
 
+  app.use('/invites/*', async (context, next) =>
+    cors({
+      origin: context.env.CLIENT_ORIGIN,
+      allowHeaders: ['Authorization'],
+      allowMethods: ['GET', 'OPTIONS'],
+      maxAge: 600,
+    })(context, next),
+  )
+
   app.use('/users/me', authenticate)
   app.use('/parties', authenticate)
   app.use('/parties/*', authenticate)
+  app.use('/invites/*', authenticate)
 
   app.put('/users/me', async (context) => {
     const user = await getUser(context.env, context.get('authUserId'))
@@ -527,6 +577,21 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
       return context.body(null, 204)
     } catch {
       return context.json({ error: 'INVITE_UPDATE_FAILED' }, 500)
+    }
+  })
+
+  app.get('/invites/:token', async (context) => {
+    const token = context.req.param('token')
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
+      return context.json({ error: 'INVITE_NOT_AVAILABLE' }, 404)
+    }
+
+    try {
+      const preview = await getInvitePreview(context.env, await hashInviteToken(token))
+      if (!preview) return context.json({ error: 'INVITE_NOT_AVAILABLE' }, 404)
+      return context.json({ party: { ...preview, capacity: 10 } })
+    } catch {
+      return context.json({ error: 'INVITE_LOAD_FAILED' }, 500)
     }
   })
 

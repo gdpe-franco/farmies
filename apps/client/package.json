@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "quasar dev",
     "test": "node --test test/*.test.mjs",
+    "test:browser": "playwright test",
     "typecheck": "quasar prepare && vue-tsc --noEmit",
     "lint": "eslint .",
     "build": "quasar build"
@@ -20,6 +21,7 @@
     "zod": "^4.6.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@quasar/app-vite": "^3.8.3",
     "typescript": "^6.0.3",
     "vue-tsc": "^3.3.11"

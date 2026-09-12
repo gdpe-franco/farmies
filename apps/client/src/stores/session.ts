@@ -10,6 +10,8 @@ type AuthClient = Pick<
   'getSession' | 'onAuthStateChange' | 'signInWithOtp' | 'signOut' | 'verifyOtp'
 >
 type SessionError = 'SESSION_RESTORE_FAILED' | 'USER_LOAD_FAILED'
+type InvitePreviewError = 'INVITE_NOT_AVAILABLE' | 'INVITE_LOAD_FAILED'
+type SessionStorage = Pick<Storage, 'getItem' | 'removeItem' | 'setItem'>
 
 export type PartyCreationError = 'ALREADY_IN_PARTY' | 'PARTY_CREATION_FAILED'
 
@@ -47,14 +49,27 @@ const inviteResponseSchema = z.object({
   expiresAt: z.iso.datetime(),
 })
 
+const invitePreviewResponseSchema = z.object({
+  party: z.object({
+    displayName: z.string(),
+    occupancy: z.number().int().min(0).max(9),
+    capacity: z.literal(10),
+  }),
+})
+
 export const partyNameSchema = z.string().trim().min(1).max(60)
 export const nicknameSchema = z.string().trim().min(1).max(40)
+export const inviteTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+
+const pendingInviteKey = 'farmies.pendingInviteToken'
 
 export const useSessionStore = defineStore('session', () => {
   const accessToken = ref<string | null>(null)
   const user = ref<z.infer<typeof userResponseSchema>['user'] | null>(null)
   const party = ref<z.infer<typeof partyResponseSchema> | null>(null)
   const invite = ref<z.infer<typeof inviteResponseSchema> | null>(null)
+  const invitePreview = ref<z.infer<typeof invitePreviewResponseSchema>['party'] | null>(null)
+  const pendingInviteToken = ref<string | null>(null)
   const initialized = ref(false)
   const error = ref<SessionError | null>(null)
   const pendingEmail = ref<string | null>(null)
@@ -64,12 +79,14 @@ export const useSessionStore = defineStore('session', () => {
   let auth: AuthClient | undefined
   let apiUrl = ''
   let fetcher: typeof fetch = fetch
+  let storage: SessionStorage | undefined
 
   const clear = () => {
     accessToken.value = null
     user.value = null
     party.value = null
     invite.value = null
+    invitePreview.value = null
     error.value = null
   }
 
@@ -109,12 +126,22 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  const initialize = async (client: AuthClient, baseUrl: string, customFetch: typeof fetch = fetch) => {
+  const initialize = async (
+    client: AuthClient,
+    baseUrl: string,
+    customFetch: typeof fetch = fetch,
+    customStorage?: SessionStorage,
+  ) => {
     if (auth) return
 
     auth = client
     apiUrl = baseUrl
     fetcher = customFetch
+    storage = customStorage ?? (typeof sessionStorage === 'undefined' ? undefined : sessionStorage)
+    const storedToken = storage?.getItem(pendingInviteKey)
+    const parsedToken = inviteTokenSchema.safeParse(storedToken)
+    pendingInviteToken.value = parsedToken.success ? parsedToken.data : null
+    if (storedToken && !parsedToken.success) storage?.removeItem(pendingInviteKey)
     auth.onAuthStateChange((_event, session) => {
       void applySession(session)
     })
@@ -135,6 +162,7 @@ export const useSessionStore = defineStore('session', () => {
     const { error: signOutError } = await auth.signOut({ scope: 'local' })
     if (signOutError) throw signOutError
     clear()
+    clearPendingInvite()
     pendingEmail.value = null
     resendAvailableAt.value = 0
   }
@@ -224,11 +252,38 @@ export const useSessionStore = defineStore('session', () => {
     if (party.value) party.value.inviteActive = false
   }
 
+  const retainInvite = (value: string) => {
+    const token = inviteTokenSchema.parse(value)
+    pendingInviteToken.value = token
+    invitePreview.value = null
+    storage?.setItem(pendingInviteKey, token)
+  }
+
+  const clearPendingInvite = () => {
+    pendingInviteToken.value = null
+    invitePreview.value = null
+    storage?.removeItem(pendingInviteKey)
+  }
+
+  const loadInvitePreview = async () => {
+    if (!pendingInviteToken.value) throw new Error('INVITE_NOT_AVAILABLE')
+    const response = await request(`/invites/${pendingInviteToken.value}`)
+    if (!response.ok) {
+      const code: InvitePreviewError = response.status === 404
+        ? 'INVITE_NOT_AVAILABLE'
+        : 'INVITE_LOAD_FAILED'
+      throw new Error(code)
+    }
+    invitePreview.value = invitePreviewResponseSchema.parse(await response.json()).party
+  }
+
   return {
     accessToken,
     user,
     party,
     invite,
+    invitePreview,
+    pendingInviteToken,
     initialized,
     error,
     pendingEmail,
@@ -245,5 +300,8 @@ export const useSessionStore = defineStore('session', () => {
     loadParty,
     replaceInvite,
     revokeInvite,
+    retainInvite,
+    clearPendingInvite,
+    loadInvitePreview,
   }
 })

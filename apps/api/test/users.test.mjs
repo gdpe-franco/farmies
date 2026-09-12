@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createApp, createInviteSecret } from '../src/index.ts'
+import { createApp, createInviteSecret, hashInviteToken } from '../src/index.ts'
 
 const issuer = 'https://example.supabase.co/auth/v1'
 const authUserId = '03d9d8e0-a088-4f4c-a97f-967675fb4e39'
@@ -48,6 +48,7 @@ test('authorized API endpoints', async (suite) => {
   const localeUpdates = []
   const partyRequests = []
   const inviteRequests = []
+  const invitePreviewRequests = []
   const currentParty = {
     party: {
       id: 84n,
@@ -100,6 +101,12 @@ test('authorized API endpoints', async (suite) => {
     findOrCreateUser: async (_bindings, id) => {
       requestedIds.push(id)
       return user
+    },
+    findInvitePreview: async (_bindings, tokenHash) => {
+      invitePreviewRequests.push(tokenHash)
+      if (tokenHash === await hashInviteToken('b'.repeat(43))) return undefined
+      if (tokenHash === await hashInviteToken('c'.repeat(43))) throw new Error('database unavailable')
+      return { displayName: 'Green Friends', occupancy: 4 }
     },
     updateUserLocale: async (_bindings, id, preferredLocale) => {
       requestedIds.push(id)
@@ -474,6 +481,74 @@ test('authorized API endpoints', async (suite) => {
       })
     }
   })
+
+  const previewHappyCases = [
+    {
+      name: 'shows only Party name and occupancy for a valid invite',
+      token: 'a'.repeat(43),
+      status: 200,
+      body: { party: { displayName: 'Green Friends', occupancy: 4, capacity: 10 } },
+    },
+  ]
+
+  await suite.test('invite preview happy path', async (happyPath) => {
+    for (const testCase of previewHappyCases) {
+      await happyPath.test(testCase.name, async () => {
+        const response = await app.request(`/invites/${testCase.token}`, {
+          headers: { Authorization: `Bearer ${validToken}`, Origin: bindings.CLIENT_ORIGIN },
+        }, bindings)
+
+        assert.equal(response.status, testCase.status)
+        assert.equal(response.headers.get('Access-Control-Allow-Origin'), bindings.CLIENT_ORIGIN)
+        assert.deepEqual(await response.json(), testCase.body)
+        assert.equal(invitePreviewRequests.at(-1), await hashInviteToken(testCase.token))
+      })
+    }
+  })
+
+  const previewFailureCases = [
+    {
+      name: 'requires authentication before resolving an invite',
+      token: 'a'.repeat(43),
+      authorization: undefined,
+      status: 401,
+      body: null,
+    },
+    {
+      name: 'hides malformed invite details',
+      token: 'invalid',
+      authorization: `Bearer ${validToken}`,
+      status: 404,
+      body: { error: 'INVITE_NOT_AVAILABLE' },
+    },
+    {
+      name: 'hides unavailable invite details',
+      token: 'b'.repeat(43),
+      authorization: `Bearer ${validToken}`,
+      status: 404,
+      body: { error: 'INVITE_NOT_AVAILABLE' },
+    },
+    {
+      name: 'returns a stable preview failure',
+      token: 'c'.repeat(43),
+      authorization: `Bearer ${validToken}`,
+      status: 500,
+      body: { error: 'INVITE_LOAD_FAILED' },
+    },
+  ]
+
+  await suite.test('invite preview failure path', async (failurePath) => {
+    for (const testCase of previewFailureCases) {
+      await failurePath.test(testCase.name, async () => {
+        const response = await app.request(`/invites/${testCase.token}`, {
+          headers: testCase.authorization ? { Authorization: testCase.authorization } : undefined,
+        }, bindings)
+
+        assert.equal(response.status, testCase.status)
+        if (testCase.body) assert.deepEqual(await response.json(), testCase.body)
+      })
+    }
+  })
 })
 
 test('invite secrets', async (suite) => {
@@ -497,5 +572,9 @@ test('invite secrets', async (suite) => {
         }
       })
     }
+  })
+
+  await suite.test('hashes a received token identically', async () => {
+    assert.equal(await hashInviteToken(first.token), first.hash)
   })
 })

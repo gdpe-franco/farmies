@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { createPinia, setActivePinia } from 'pinia'
 
+import { messages } from '../src/i18n/messages.ts'
 import { useSessionStore } from '../src/stores/session.ts'
 
 const applicationUser = {
@@ -75,11 +76,24 @@ const invite = {
   expiresAt: '2026-09-12T08:00:00.000Z',
 }
 
+const inviteToken = 'a'.repeat(43)
+const invitePreview = { displayName: 'Green Friends', occupancy: 4, capacity: 10 }
+
+const createStorage = () => {
+  const values = new Map()
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  }
+}
+
 const createFetcher = (
   status = 200,
   partyStatus = 201,
   currentPartyStatus = 200,
   inviteStatus = 201,
+  invitePreviewStatus = 200,
 ) => {
   const requests = []
   const fetcher = async (input, init) => {
@@ -90,6 +104,14 @@ const createFetcher = (
       return inviteStatus === 201
         ? Response.json(invite, { status: 201 })
         : Response.json({ error: 'INVITE_UPDATE_FAILED' }, { status: inviteStatus })
+    }
+    if (url.includes('/invites/')) {
+      return invitePreviewStatus === 200
+        ? Response.json({ party: invitePreview })
+        : Response.json(
+            { error: invitePreviewStatus === 404 ? 'INVITE_NOT_AVAILABLE' : 'INVITE_LOAD_FAILED' },
+            { status: invitePreviewStatus },
+          )
     }
     if (url.endsWith('/parties/current')) {
       return currentPartyStatus === 200
@@ -354,6 +376,99 @@ test('email code authentication', async (suite) => {
         assert.equal(auth.codeRequests.length, testCase.expectedCodeRequests)
         assert.equal(auth.verificationRequests.length, testCase.expectedVerificationRequests)
         assert.equal(store.user, null)
+      })
+    }
+  })
+})
+
+test('invite authentication continuation', async (suite) => {
+  const happyCases = [
+    { name: 'continues in English', locale: 'en', confirmation: 'Join this Party?' },
+    { name: 'continues in Spanish', locale: 'es', confirmation: '¿Unirte a este grupo?' },
+  ]
+
+  await suite.test('happy path', async (happyPath) => {
+    for (const testCase of happyCases) {
+      await happyPath.test(testCase.name, async () => {
+        const storage = createStorage()
+        setActivePinia(createPinia())
+        const firstStore = useSessionStore()
+        await firstStore.initialize(
+          createAuth().client,
+          'https://api.farmies.test',
+          createFetcher().fetcher,
+          storage,
+        )
+        firstStore.retainInvite(inviteToken)
+
+        setActivePinia(createPinia())
+        const auth = createAuth()
+        const api = createFetcher()
+        const restoredStore = useSessionStore()
+        await restoredStore.initialize(
+          auth.client,
+          'https://api.farmies.test',
+          api.fetcher,
+          storage,
+        )
+        await restoredStore.requestEmailCode('friend@example.com')
+        await restoredStore.verifyEmailCode('123456')
+        await new Promise(setImmediate)
+        await restoredStore.loadInvitePreview()
+
+        assert.equal(restoredStore.pendingInviteToken, inviteToken)
+        assert.deepEqual(restoredStore.invitePreview, invitePreview)
+        assert.equal(api.requests.at(-1).url, `https://api.farmies.test/invites/${inviteToken}`)
+        assert.equal(messages[testCase.locale].confirmation.join, testCase.confirmation)
+
+        restoredStore.clearPendingInvite()
+        assert.equal(restoredStore.pendingInviteToken, null)
+        assert.equal(storage.getItem('farmies.pendingInviteToken'), null)
+
+        restoredStore.retainInvite(inviteToken)
+        await restoredStore.signOut()
+        assert.equal(restoredStore.pendingInviteToken, null)
+        assert.equal(storage.getItem('farmies.pendingInviteToken'), null)
+      })
+    }
+  })
+
+  const failureCases = [
+    {
+      name: 'rejects a malformed token without retaining it',
+      token: 'invalid',
+      previewStatus: 200,
+      expectedError: /invalid_format/,
+    },
+    {
+      name: 'preserves the destination after an unavailable preview',
+      token: inviteToken,
+      previewStatus: 404,
+      expectedError: /INVITE_NOT_AVAILABLE/,
+    },
+  ]
+
+  await suite.test('failure path', async (failurePath) => {
+    for (const testCase of failureCases) {
+      await failurePath.test(testCase.name, async () => {
+        setActivePinia(createPinia())
+        const storage = createStorage()
+        const store = useSessionStore()
+        await store.initialize(
+          createAuth({ session: { access_token: 'valid-token' } }).client,
+          'https://api.farmies.test',
+          createFetcher(200, 201, 200, 201, testCase.previewStatus).fetcher,
+          storage,
+        )
+
+        if (testCase.token === 'invalid') {
+          assert.throws(() => store.retainInvite(testCase.token), testCase.expectedError)
+          assert.equal(store.pendingInviteToken, null)
+        } else {
+          store.retainInvite(testCase.token)
+          await assert.rejects(store.loadInvitePreview(), testCase.expectedError)
+          assert.equal(store.pendingInviteToken, testCase.token)
+        }
       })
     }
   })
