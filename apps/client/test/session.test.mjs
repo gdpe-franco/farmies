@@ -66,13 +66,36 @@ const createdParty = {
     nickname: 'Fern',
     joinedAt: '2026-09-11T08:00:00.000Z',
   },
+  isOwner: true,
+  inviteActive: false,
 }
 
-const createFetcher = (status = 200, partyStatus = 201) => {
+const invite = {
+  inviteUrl: 'https://farmies.test/invite/private-invite-token',
+  expiresAt: '2026-09-12T08:00:00.000Z',
+}
+
+const createFetcher = (
+  status = 200,
+  partyStatus = 201,
+  currentPartyStatus = 200,
+  inviteStatus = 201,
+) => {
   const requests = []
   const fetcher = async (input, init) => {
     const url = String(input)
     requests.push({ url, init })
+    if (url.endsWith('/parties/current/invite')) {
+      if (init.method === 'DELETE' && inviteStatus === 204) return new Response(null, { status: 204 })
+      return inviteStatus === 201
+        ? Response.json(invite, { status: 201 })
+        : Response.json({ error: 'INVITE_UPDATE_FAILED' }, { status: inviteStatus })
+    }
+    if (url.endsWith('/parties/current')) {
+      return currentPartyStatus === 200
+        ? Response.json(createdParty)
+        : Response.json({ error: 'PARTY_NOT_FOUND' }, { status: currentPartyStatus })
+    }
     if (url.endsWith('/parties')) {
       return partyStatus === 201
         ? Response.json(createdParty, { status: 201 })
@@ -424,6 +447,113 @@ test('Party creation', async (suite) => {
           api.requests.filter(({ url }) => url.endsWith('/parties')).length,
           testCase.expectedPartyRequests,
         )
+      })
+    }
+  })
+})
+
+test('Party invite management', async (suite) => {
+  const happyCases = [
+    {
+      name: 'restores the current Party after reload',
+      action: 'load',
+      inviteStatus: 201,
+      expectedParty: createdParty,
+      expectedInvite: null,
+      expectedMethod: undefined,
+    },
+    {
+      name: 'creates or replaces the private invite',
+      action: 'replace',
+      inviteStatus: 201,
+      expectedParty: { ...createdParty, inviteActive: true },
+      expectedInvite: invite,
+      expectedMethod: 'POST',
+    },
+    {
+      name: 'revokes the private invite',
+      action: 'revoke',
+      inviteStatus: 204,
+      expectedParty: { ...createdParty, inviteActive: false },
+      expectedInvite: null,
+      expectedMethod: 'DELETE',
+    },
+  ]
+
+  await suite.test('happy path', async (happyPath) => {
+    for (const testCase of happyCases) {
+      await happyPath.test(testCase.name, async () => {
+        setActivePinia(createPinia())
+        const auth = createAuth({ session: { access_token: 'valid-token' } })
+        const api = createFetcher(200, 201, 200, testCase.inviteStatus)
+        const store = useSessionStore()
+        await store.initialize(auth.client, 'https://api.farmies.test', api.fetcher)
+        await store.loadParty()
+
+        if (testCase.action === 'replace') await store.replaceInvite()
+        if (testCase.action === 'revoke') await store.revokeInvite()
+
+        assert.deepEqual(store.party, testCase.expectedParty)
+        assert.deepEqual(store.invite, testCase.expectedInvite)
+        if (testCase.expectedMethod) {
+          const request = api.requests.at(-1)
+          assert.equal(request.url, 'https://api.farmies.test/parties/current/invite')
+          assert.equal(request.init.method, testCase.expectedMethod)
+          assert.equal(new Headers(request.init.headers).get('Authorization'), 'Bearer valid-token')
+        }
+      })
+    }
+  })
+
+  const failureCases = [
+    {
+      name: 'treats a missing current Party as an empty state',
+      action: 'load',
+      currentStatus: 404,
+      inviteStatus: 201,
+      rejects: false,
+    },
+    {
+      name: 'reports a current Party load failure',
+      action: 'load',
+      currentStatus: 500,
+      inviteStatus: 201,
+      rejects: true,
+    },
+    {
+      name: 'reports an invite replacement failure',
+      action: 'replace',
+      currentStatus: 200,
+      inviteStatus: 403,
+      rejects: true,
+    },
+    {
+      name: 'reports an invite revocation failure',
+      action: 'revoke',
+      currentStatus: 200,
+      inviteStatus: 500,
+      rejects: true,
+    },
+  ]
+
+  await suite.test('failure path', async (failurePath) => {
+    for (const testCase of failureCases) {
+      await failurePath.test(testCase.name, async () => {
+        setActivePinia(createPinia())
+        const auth = createAuth({ session: { access_token: 'valid-token' } })
+        const api = createFetcher(200, 201, testCase.currentStatus, testCase.inviteStatus)
+        const store = useSessionStore()
+        await store.initialize(auth.client, 'https://api.farmies.test', api.fetcher)
+
+        const action = testCase.action === 'load'
+          ? store.loadParty()
+          : testCase.action === 'replace'
+            ? store.replaceInvite()
+            : store.revokeInvite()
+        if (testCase.rejects) await assert.rejects(action)
+        else await action
+
+        assert.equal(store.invite, null)
       })
     }
   })

@@ -38,6 +38,13 @@ const partyResponseSchema = z.object({
     nickname: z.string(),
     joinedAt: z.iso.datetime(),
   }),
+  isOwner: z.boolean(),
+  inviteActive: z.boolean(),
+})
+
+const inviteResponseSchema = z.object({
+  inviteUrl: z.url(),
+  expiresAt: z.iso.datetime(),
 })
 
 export const partyNameSchema = z.string().trim().min(1).max(60)
@@ -47,6 +54,7 @@ export const useSessionStore = defineStore('session', () => {
   const accessToken = ref<string | null>(null)
   const user = ref<z.infer<typeof userResponseSchema>['user'] | null>(null)
   const party = ref<z.infer<typeof partyResponseSchema> | null>(null)
+  const invite = ref<z.infer<typeof inviteResponseSchema> | null>(null)
   const initialized = ref(false)
   const error = ref<SessionError | null>(null)
   const pendingEmail = ref<string | null>(null)
@@ -61,6 +69,7 @@ export const useSessionStore = defineStore('session', () => {
     accessToken.value = null
     user.value = null
     party.value = null
+    invite.value = null
     error.value = null
   }
 
@@ -191,10 +200,35 @@ export const useSessionStore = defineStore('session', () => {
     party.value = partyResponseSchema.parse(await response.json())
   }
 
+  const loadParty = async () => {
+    const response = await request('/parties/current')
+    if (response.status === 404) {
+      party.value = null
+      return
+    }
+    if (!response.ok) throw new Error('PARTY_LOAD_FAILED')
+    party.value = partyResponseSchema.parse(await response.json())
+  }
+
+  const replaceInvite = async () => {
+    const response = await request('/parties/current/invite', { method: 'POST' })
+    if (!response.ok) throw new Error('INVITE_UPDATE_FAILED')
+    invite.value = inviteResponseSchema.parse(await response.json())
+    if (party.value) party.value.inviteActive = true
+  }
+
+  const revokeInvite = async () => {
+    const response = await request('/parties/current/invite', { method: 'DELETE' })
+    if (!response.ok) throw new Error('INVITE_UPDATE_FAILED')
+    invite.value = null
+    if (party.value) party.value.inviteActive = false
+  }
+
   return {
     accessToken,
     user,
     party,
+    invite,
     initialized,
     error,
     pendingEmail,
@@ -208,5 +242,8 @@ export const useSessionStore = defineStore('session', () => {
     changeEmail,
     updateLocale,
     createParty,
+    loadParty,
+    replaceInvite,
+    revokeInvite,
   }
 })

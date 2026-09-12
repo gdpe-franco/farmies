@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createApp } from '../src/index.ts'
+import { createApp, createInviteSecret } from '../src/index.ts'
 
 const issuer = 'https://example.supabase.co/auth/v1'
 const authUserId = '03d9d8e0-a088-4f4c-a97f-967675fb4e39'
@@ -47,6 +47,29 @@ test('authorized API endpoints', async (suite) => {
   const requestedIds = []
   const localeUpdates = []
   const partyRequests = []
+  const inviteRequests = []
+  const currentParty = {
+    party: {
+      id: 84n,
+      displayName: 'Green Friends',
+      species: 'COW',
+      environment: 'PASTURE',
+      createdAt: new Date('2026-09-11T08:00:00.000Z'),
+    },
+    membership: {
+      id: 85n,
+      nickname: 'Fern',
+      joinedAt: new Date('2026-09-11T08:00:00.000Z'),
+    },
+    isOwner: true,
+    inviteActive: false,
+  }
+  let currentPartyResult = currentParty
+  let inviteResult = {
+    status: 'created',
+    token: 'private-invite-token',
+    expiresAt: new Date('2026-09-12T08:00:00.000Z'),
+  }
   const user = {
     id: 42n,
     preferredLocale: 'en',
@@ -63,20 +86,16 @@ test('authorized API endpoints', async (suite) => {
       return {
         status: 'created',
         value: {
-          party: {
-            id: 84n,
-            displayName: input.displayName,
-            species: 'COW',
-            environment: 'PASTURE',
-            createdAt: new Date('2026-09-11T08:00:00.000Z'),
-          },
-          membership: {
-            id: 85n,
-            nickname: input.nickname,
-            joinedAt: new Date('2026-09-11T08:00:00.000Z'),
-          },
+          party: { ...currentParty.party, displayName: input.displayName },
+          membership: { ...currentParty.membership, nickname: input.nickname },
+          isOwner: true,
+          inviteActive: false,
         },
       }
+    },
+    findCurrentParty: async () => {
+      if (currentPartyResult instanceof Error) throw currentPartyResult
+      return currentPartyResult
     },
     findOrCreateUser: async (_bindings, id) => {
       requestedIds.push(id)
@@ -86,6 +105,11 @@ test('authorized API endpoints', async (suite) => {
       requestedIds.push(id)
       localeUpdates.push(preferredLocale)
       return { ...user, preferredLocale }
+    },
+    manageInvite: async (_bindings, id, action) => {
+      inviteRequests.push({ id, action })
+      if (inviteResult instanceof Error) throw inviteResult
+      return inviteResult
     },
   })
   const bindings = {
@@ -220,6 +244,8 @@ test('authorized API endpoints', async (suite) => {
           nickname: 'Fern',
           joinedAt: '2026-09-11T08:00:00.000Z',
         },
+        isOwner: true,
+        inviteActive: false,
       },
     },
   ]
@@ -303,6 +329,172 @@ test('authorized API endpoints', async (suite) => {
 
         assert.equal(response.status, testCase.status)
         if (testCase.body) assert.deepEqual(await response.json(), testCase.body)
+      })
+    }
+  })
+
+  const inviteHappyCases = [
+    {
+      name: 'loads the current Party without revealing an invite token',
+      method: 'GET',
+      path: '/parties/current',
+      status: 200,
+      body: {
+        party: {
+          id: '84',
+          displayName: 'Green Friends',
+          species: 'COW',
+          environment: 'PASTURE',
+          createdAt: '2026-09-11T08:00:00.000Z',
+        },
+        membership: {
+          id: '85',
+          nickname: 'Fern',
+          joinedAt: '2026-09-11T08:00:00.000Z',
+        },
+        isOwner: true,
+        inviteActive: false,
+      },
+    },
+    {
+      name: 'creates or replaces an invite for the current owner',
+      method: 'POST',
+      path: '/parties/current/invite',
+      status: 201,
+      body: {
+        inviteUrl: 'https://farmies.test/invite/private-invite-token',
+        expiresAt: '2026-09-12T08:00:00.000Z',
+      },
+    },
+    {
+      name: 'revokes the current invite idempotently',
+      method: 'DELETE',
+      path: '/parties/current/invite',
+      status: 204,
+      body: null,
+    },
+  ]
+
+  await suite.test('invite happy path', async (happyPath) => {
+    for (const testCase of inviteHappyCases) {
+      await happyPath.test(testCase.name, async () => {
+        inviteResult = testCase.method === 'DELETE'
+          ? { status: 'revoked' }
+          : {
+              status: 'created',
+              token: 'private-invite-token',
+              expiresAt: new Date('2026-09-12T08:00:00.000Z'),
+            }
+        const response = await app.request(testCase.path, {
+          method: testCase.method,
+          headers: { Authorization: `Bearer ${validToken}`, Origin: bindings.CLIENT_ORIGIN },
+        }, bindings)
+
+        assert.equal(response.status, testCase.status)
+        assert.equal(response.headers.get('Access-Control-Allow-Origin'), bindings.CLIENT_ORIGIN)
+        if (testCase.body) assert.deepEqual(await response.json(), testCase.body)
+      })
+    }
+    assert.deepEqual(inviteRequests, [
+      { id: authUserId, action: 'replace' },
+      { id: authUserId, action: 'revoke' },
+    ])
+  })
+
+  const inviteFailureCases = [
+    {
+      name: 'requires authentication',
+      path: '/parties/current/invite',
+      method: 'POST',
+      authorization: undefined,
+      result: { status: 'created' },
+      status: 401,
+      body: null,
+    },
+    {
+      name: 'does not expose a missing current Party',
+      path: '/parties/current',
+      method: 'GET',
+      authorization: `Bearer ${validToken}`,
+      current: undefined,
+      result: { status: 'created' },
+      status: 404,
+      body: { error: 'PARTY_NOT_FOUND' },
+    },
+    {
+      name: 'rejects invite creation by a non-owner',
+      path: '/parties/current/invite',
+      method: 'POST',
+      authorization: `Bearer ${validToken}`,
+      result: { status: 'owner_required' },
+      status: 403,
+      body: { error: 'PARTY_OWNER_REQUIRED' },
+    },
+    {
+      name: 'rejects invite revocation by a non-owner',
+      path: '/parties/current/invite',
+      method: 'DELETE',
+      authorization: `Bearer ${validToken}`,
+      result: { status: 'owner_required' },
+      status: 403,
+      body: { error: 'PARTY_OWNER_REQUIRED' },
+    },
+    {
+      name: 'returns a stable invite update failure',
+      path: '/parties/current/invite',
+      method: 'POST',
+      authorization: `Bearer ${validToken}`,
+      result: new Error('database unavailable'),
+      status: 500,
+      body: { error: 'INVITE_UPDATE_FAILED' },
+    },
+    {
+      name: 'does not provide a Party-ID invite route',
+      path: '/parties/84/invite',
+      method: 'GET',
+      authorization: `Bearer ${validToken}`,
+      result: { status: 'created' },
+      status: 404,
+      body: null,
+    },
+  ]
+
+  await suite.test('invite failure path', async (failurePath) => {
+    for (const testCase of inviteFailureCases) {
+      await failurePath.test(testCase.name, async () => {
+        currentPartyResult = Object.hasOwn(testCase, 'current') ? testCase.current : currentParty
+        inviteResult = testCase.result
+        const response = await app.request(testCase.path, {
+          method: testCase.method,
+          headers: testCase.authorization ? { Authorization: testCase.authorization } : undefined,
+        }, bindings)
+
+        assert.equal(response.status, testCase.status)
+        if (testCase.body) assert.deepEqual(await response.json(), testCase.body)
+      })
+    }
+  })
+})
+
+test('invite secrets', async (suite) => {
+  const happyCases = [
+    { name: 'generates unique 256-bit base64url bearer tokens' },
+    { name: 'stores the lowercase SHA-256 token hash' },
+  ]
+  const first = await createInviteSecret()
+  const second = await createInviteSecret()
+
+  await suite.test('happy path', async (happyPath) => {
+    for (const testCase of happyCases) {
+      await happyPath.test(testCase.name, async () => {
+        if (testCase.name.includes('unique')) {
+          assert.match(first.token, /^[A-Za-z0-9_-]{43}$/)
+          assert.notEqual(first.token, second.token)
+        } else {
+          const digest = await crypto.subtle.digest('SHA-256', encoder.encode(first.token))
+          assert.equal(first.hash, Buffer.from(digest).toString('hex'))
+          assert.match(first.hash, /^[0-9a-f]{64}$/)
+        }
       })
     }
   })

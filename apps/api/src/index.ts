@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, gt, isNull, sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { Hono } from 'hono'
 import type { MiddlewareHandler } from 'hono'
@@ -9,6 +9,7 @@ import { z } from 'zod'
 
 import {
   environments,
+  invites,
   memberships,
   parties,
   species,
@@ -34,7 +35,7 @@ type ApplicationUser = {
   updatedAt: Date
 }
 
-type CreatedParty = {
+type PartyMembership = {
   party: {
     id: bigint
     displayName: string
@@ -47,10 +48,12 @@ type CreatedParty = {
     nickname: string
     joinedAt: Date
   }
+  isOwner: boolean
+  inviteActive: boolean
 }
 
 type CreatePartyResult =
-  | { status: 'created'; value: CreatedParty }
+  | { status: 'created'; value: PartyMembership }
   | { status: 'already_member' }
   | { status: 'user_not_found' }
 
@@ -65,10 +68,22 @@ type CreateParty = (
   authUserId: string,
   input: { displayName: string; nickname: string },
 ) => Promise<CreatePartyResult>
+type FindCurrentParty = (bindings: Bindings, authUserId: string) => Promise<PartyMembership | undefined>
+type ManageInviteResult =
+  | { status: 'created'; token: string; expiresAt: Date }
+  | { status: 'revoked' }
+  | { status: 'owner_required' }
+type ManageInvite = (
+  bindings: Bindings,
+  authUserId: string,
+  action: 'replace' | 'revoke',
+) => Promise<ManageInviteResult>
 
 type Dependencies = {
   createParty: CreateParty
+  findCurrentParty: FindCurrentParty
   findOrCreateUser: FindOrCreateUser
+  manageInvite: ManageInvite
   updateUserLocale: UpdateUserLocale
 }
 
@@ -96,13 +111,31 @@ const userFields = {
 
 const unauthorized = () => new Response('Unauthorized', { status: 401 })
 
-const findOrCreateUser: FindOrCreateUser = async (bindings, authUserId) => {
+const openDatabase = (bindings: Bindings) => {
   const client = postgres(bindings.HYPERDRIVE.connectionString, {
     max: 1,
     fetch_types: false,
     prepare: true,
   })
-  const database = drizzle(client)
+  return { client, database: drizzle(client) }
+}
+
+export const createInviteSecret = async () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(32))
+  const token = btoa(String.fromCharCode(...bytes))
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replaceAll('=', '')
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
+  const hash = [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+
+  return { token, hash }
+}
+
+const findOrCreateUser: FindOrCreateUser = async (bindings, authUserId) => {
+  const { client, database } = openDatabase(bindings)
 
   try {
     await database.execute(sql`
@@ -124,12 +157,7 @@ const findOrCreateUser: FindOrCreateUser = async (bindings, authUserId) => {
 }
 
 const updateUserLocale: UpdateUserLocale = async (bindings, authUserId, preferredLocale) => {
-  const client = postgres(bindings.HYPERDRIVE.connectionString, {
-    max: 1,
-    fetch_types: false,
-    prepare: true,
-  })
-  const database = drizzle(client)
+  const { client, database } = openDatabase(bindings)
 
   try {
     const [user] = await database
@@ -145,12 +173,7 @@ const updateUserLocale: UpdateUserLocale = async (bindings, authUserId, preferre
 }
 
 const createParty: CreateParty = async (bindings, authUserId, input) => {
-  const client = postgres(bindings.HYPERDRIVE.connectionString, {
-    max: 1,
-    fetch_types: false,
-    prepare: true,
-  })
-  const database = drizzle(client)
+  const { client, database } = openDatabase(bindings)
 
   try {
     return await database.transaction(async (transaction) => {
@@ -213,12 +236,118 @@ const createParty: CreateParty = async (bindings, authUserId, input) => {
             environment: catalog.environment,
           },
           membership,
+          isOwner: true,
+          inviteActive: false,
         },
       }
     })
   } catch (error) {
     if ((error as { code?: string }).code === '23505') return { status: 'already_member' }
     throw error
+  } finally {
+    await client.end()
+  }
+}
+
+const findCurrentParty: FindCurrentParty = async (bindings, authUserId) => {
+  const { client, database } = openDatabase(bindings)
+
+  try {
+    const [result] = await database
+      .select({
+        partyId: parties.id,
+        ownerUserId: parties.ownerUserId,
+        displayName: parties.displayName,
+        species: species.code,
+        environment: environments.code,
+        partyCreatedAt: parties.createdAt,
+        membershipId: memberships.id,
+        userId: users.id,
+        nickname: memberships.nickname,
+        joinedAt: memberships.joinedAt,
+        invitePartyId: invites.partyId,
+      })
+      .from(users)
+      .innerJoin(
+        memberships,
+        and(eq(memberships.userId, users.id), isNull(memberships.deletedAt)),
+      )
+      .innerJoin(parties, and(eq(parties.id, memberships.partyId), isNull(parties.deletedAt)))
+      .innerJoin(species, eq(species.id, parties.speciesId))
+      .innerJoin(environments, eq(environments.id, parties.environmentId))
+      .leftJoin(
+        invites,
+        and(
+          eq(invites.partyId, parties.id),
+          isNull(invites.revokedAt),
+          isNull(invites.deletedAt),
+          gt(invites.expiresAt, sql`now()`),
+        ),
+      )
+      .where(and(eq(users.authUserId, authUserId), isNull(users.deletedAt)))
+      .limit(1)
+
+    if (!result) return undefined
+    return {
+      party: {
+        id: result.partyId,
+        displayName: result.displayName,
+        species: result.species,
+        environment: result.environment,
+        createdAt: result.partyCreatedAt,
+      },
+      membership: {
+        id: result.membershipId,
+        nickname: result.nickname,
+        joinedAt: result.joinedAt,
+      },
+      isOwner: result.ownerUserId === result.userId,
+      inviteActive: result.invitePartyId !== null,
+    }
+  } finally {
+    await client.end()
+  }
+}
+
+const manageInvite: ManageInvite = async (bindings, authUserId, action) => {
+  const { client, database } = openDatabase(bindings)
+
+  try {
+    return await database.transaction(async (transaction) => {
+      const [party] = await transaction
+        .select({ id: parties.id })
+        .from(parties)
+        .innerJoin(
+          users,
+          and(eq(users.id, parties.ownerUserId), isNull(users.deletedAt)),
+        )
+        .where(and(eq(users.authUserId, authUserId), isNull(parties.deletedAt)))
+        .limit(1)
+      if (!party) return { status: 'owner_required' }
+
+      if (action === 'revoke') {
+        await transaction
+          .update(invites)
+          .set({ revokedAt: sql`now()` })
+          .where(and(eq(invites.partyId, party.id), isNull(invites.deletedAt)))
+        return { status: 'revoked' }
+      }
+
+      const { token, hash } = await createInviteSecret()
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1_000)
+      await transaction.execute(sql`
+        insert into ${invites} (party_id, token_hash, expires_at)
+        values (${party.id}, ${hash}, ${expiresAt.toISOString()})
+        on conflict (party_id) do update set
+          token_hash = excluded.token_hash,
+          expires_at = excluded.expires_at,
+          revoked_at = null,
+          created_at = now(),
+          deleted_at = null
+      `)
+
+      return { status: 'created', token, expiresAt }
+    })
   } finally {
     await client.end()
   }
@@ -233,7 +362,7 @@ const serializeUser = (user: ApplicationUser) => ({
   },
 })
 
-const serializeParty = ({ party, membership }: CreatedParty) => ({
+const serializeParty = ({ party, membership, isOwner, inviteActive }: PartyMembership) => ({
   party: {
     id: party.id.toString(),
     displayName: party.displayName,
@@ -246,11 +375,15 @@ const serializeParty = ({ party, membership }: CreatedParty) => ({
     nickname: membership.nickname,
     joinedAt: membership.joinedAt.toISOString(),
   },
+  isOwner,
+  inviteActive,
 })
 
 export const createApp = (dependencies: Partial<Dependencies> = {}) => {
   const addParty = dependencies.createParty ?? createParty
+  const getCurrentParty = dependencies.findCurrentParty ?? findCurrentParty
   const getUser = dependencies.findOrCreateUser ?? findOrCreateUser
+  const updateInvite = dependencies.manageInvite ?? manageInvite
   const setUserLocale = dependencies.updateUserLocale ?? updateUserLocale
   const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -306,8 +439,18 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     })(context, next),
   )
 
+  app.use('/parties/*', async (context, next) =>
+    cors({
+      origin: context.env.CLIENT_ORIGIN,
+      allowHeaders: ['Authorization', 'Content-Type'],
+      allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+      maxAge: 600,
+    })(context, next),
+  )
+
   app.use('/users/me', authenticate)
   app.use('/parties', authenticate)
+  app.use('/parties/*', authenticate)
 
   app.put('/users/me', async (context) => {
     const user = await getUser(context.env, context.get('authUserId'))
@@ -346,6 +489,44 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
       return context.json(serializeParty(result.value), 201)
     } catch {
       return context.json({ error: 'PARTY_CREATION_FAILED' }, 500)
+    }
+  })
+
+  app.get('/parties/current', async (context) => {
+    try {
+      const party = await getCurrentParty(context.env, context.get('authUserId'))
+      if (!party) return context.json({ error: 'PARTY_NOT_FOUND' }, 404)
+      return context.json(serializeParty(party))
+    } catch {
+      return context.json({ error: 'PARTY_LOAD_FAILED' }, 500)
+    }
+  })
+
+  app.post('/parties/current/invite', async (context) => {
+    try {
+      const result = await updateInvite(context.env, context.get('authUserId'), 'replace')
+      if (result.status === 'owner_required') {
+        return context.json({ error: 'PARTY_OWNER_REQUIRED' }, 403)
+      }
+      if (result.status !== 'created') throw new Error('Unexpected invite result')
+
+      const inviteUrl = new URL(`/invite/${result.token}`, context.env.CLIENT_ORIGIN).toString()
+      return context.json({ inviteUrl, expiresAt: result.expiresAt.toISOString() }, 201)
+    } catch {
+      return context.json({ error: 'INVITE_UPDATE_FAILED' }, 500)
+    }
+  })
+
+  app.delete('/parties/current/invite', async (context) => {
+    try {
+      const result = await updateInvite(context.env, context.get('authUserId'), 'revoke')
+      if (result.status === 'owner_required') {
+        return context.json({ error: 'PARTY_OWNER_REQUIRED' }, 403)
+      }
+      if (result.status !== 'revoked') throw new Error('Unexpected invite result')
+      return context.body(null, 204)
+    } catch {
+      return context.json({ error: 'INVITE_UPDATE_FAILED' }, 500)
     }
   })
 
