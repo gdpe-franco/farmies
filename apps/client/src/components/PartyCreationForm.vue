@@ -22,6 +22,8 @@
           {{ t('party.membership', { nickname: session.party.membership.nickname }) }}
         </p>
 
+        <avatar-setup />
+
         <section v-if="session.party.isOwner">
           <h3 class="text-h6 q-mb-sm">
             {{ t('invite.title') }}
@@ -136,6 +138,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import AvatarSetup from './AvatarSetup.vue'
 import { nicknameSchema, partyNameSchema, useSessionStore } from '../stores/session'
 
 const { locale, t } = useI18n()

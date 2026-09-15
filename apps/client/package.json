@@ -12,6 +12,7 @@
     "build": "quasar build"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "1.0.1",
     "@supabase/supabase-js": "^2.116.0",
     "pinia": "^4.0.3",
     "quasar": "^2.31.0",

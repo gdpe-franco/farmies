@@ -1,0 +1,1 @@
+`face.jpg` is the public-domain official Barack Obama portrait by Pete Souza, supplied as a MediaPipe test image at https://storage.googleapis.com/mediapipe-assets/portrait.jpg. It is used only for face-detection tests, not as application artwork.
