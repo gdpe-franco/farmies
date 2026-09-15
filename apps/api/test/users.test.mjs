@@ -49,6 +49,7 @@ test('authorized API endpoints', async (suite) => {
   const partyRequests = []
   const inviteRequests = []
   const invitePreviewRequests = []
+  const joinRequests = []
   const currentParty = {
     party: {
       id: 84n,
@@ -70,6 +71,10 @@ test('authorized API endpoints', async (suite) => {
     status: 'created',
     token: 'private-invite-token',
     expiresAt: new Date('2026-09-12T08:00:00.000Z'),
+  }
+  let joinResult = {
+    status: 'joined',
+    value: { ...currentParty, isOwner: false, inviteActive: true },
   }
   const user = {
     id: 42n,
@@ -107,6 +112,11 @@ test('authorized API endpoints', async (suite) => {
       if (tokenHash === await hashInviteToken('b'.repeat(43))) return undefined
       if (tokenHash === await hashInviteToken('c'.repeat(43))) throw new Error('database unavailable')
       return { displayName: 'Green Friends', occupancy: 4 }
+    },
+    joinParty: async (_bindings, id, input) => {
+      joinRequests.push({ id, input })
+      if (joinResult instanceof Error) throw joinResult
+      return joinResult
     },
     updateUserLocale: async (_bindings, id, preferredLocale) => {
       requestedIds.push(id)
@@ -546,6 +556,73 @@ test('authorized API endpoints', async (suite) => {
 
         assert.equal(response.status, testCase.status)
         if (testCase.body) assert.deepEqual(await response.json(), testCase.body)
+      })
+    }
+  })
+
+  const membershipHappyCases = [
+    {
+      name: 'creates a membership from a valid invite',
+      resultStatus: 'joined',
+      status: 201,
+    },
+    {
+      name: 'returns the existing membership when the same join is retried',
+      resultStatus: 'already_joined',
+      status: 200,
+    },
+  ]
+
+  await suite.test('membership happy path', async (happyPath) => {
+    for (const testCase of membershipHappyCases) {
+      await happyPath.test(testCase.name, async () => {
+        joinResult = {
+          status: testCase.resultStatus,
+          value: { ...currentParty, isOwner: false, inviteActive: true },
+        }
+        const response = await app.request('/memberships', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${validToken}`,
+            'Content-Type': 'application/json',
+            Origin: bindings.CLIENT_ORIGIN,
+          },
+          body: JSON.stringify({ inviteToken: 'a'.repeat(43), nickname: '  Fern  ' }),
+        }, bindings)
+
+        assert.equal(response.status, testCase.status)
+        assert.equal(response.headers.get('Access-Control-Allow-Origin'), bindings.CLIENT_ORIGIN)
+        assert.equal((await response.json()).membership.nickname, 'Fern')
+        assert.deepEqual(joinRequests.at(-1), {
+          id: authUserId,
+          input: { inviteTokenHash: await hashInviteToken('a'.repeat(43)), nickname: 'Fern' },
+        })
+      })
+    }
+  })
+
+  const membershipFailureCases = [
+    { name: 'requires authentication', authorization: undefined, body: { inviteToken: 'a'.repeat(43), nickname: 'Fern' }, result: { status: 'joined' }, status: 401, error: null },
+    { name: 'rejects a malformed invite token', authorization: `Bearer ${validToken}`, body: { inviteToken: 'invalid', nickname: 'Fern' }, result: { status: 'joined' }, status: 400, error: 'INVALID_REQUEST' },
+    { name: 'rejects an empty nickname', authorization: `Bearer ${validToken}`, body: { inviteToken: 'a'.repeat(43), nickname: '   ' }, result: { status: 'joined' }, status: 400, error: 'INVALID_REQUEST' },
+    { name: 'hides invalid, expired, revoked, or full invites', authorization: `Bearer ${validToken}`, body: { inviteToken: 'a'.repeat(43), nickname: 'Fern' }, result: { status: 'invite_not_available' }, status: 404, error: 'INVITE_NOT_AVAILABLE' },
+    { name: 'rejects a user who already belongs to another Party', authorization: `Bearer ${validToken}`, body: { inviteToken: 'a'.repeat(43), nickname: 'Fern' }, result: { status: 'already_member' }, status: 409, error: 'ALREADY_IN_PARTY' },
+  ]
+
+  await suite.test('membership failure path', async (failurePath) => {
+    for (const testCase of membershipFailureCases) {
+      await failurePath.test(testCase.name, async () => {
+        joinResult = testCase.result
+        const response = await app.request('/memberships', {
+          method: 'POST',
+          headers: testCase.authorization
+            ? { Authorization: testCase.authorization, 'Content-Type': 'application/json' }
+            : { 'Content-Type': 'application/json' },
+          body: JSON.stringify(testCase.body),
+        }, bindings)
+
+        assert.equal(response.status, testCase.status)
+        if (testCase.error) assert.deepEqual(await response.json(), { error: testCase.error })
       })
     }
   })

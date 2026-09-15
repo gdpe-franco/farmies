@@ -14,6 +14,7 @@ type InvitePreviewError = 'INVITE_NOT_AVAILABLE' | 'INVITE_LOAD_FAILED'
 type SessionStorage = Pick<Storage, 'getItem' | 'removeItem' | 'setItem'>
 
 export type PartyCreationError = 'ALREADY_IN_PARTY' | 'PARTY_CREATION_FAILED'
+export type PartyJoinError = 'ALREADY_IN_PARTY' | 'INVITE_NOT_AVAILABLE' | 'PARTY_JOIN_FAILED'
 
 export const emailSchema = z.string().trim().toLowerCase().pipe(z.email())
 export const emailCodeSchema = z.string().regex(/^\d{6}$/)
@@ -277,6 +278,27 @@ export const useSessionStore = defineStore('session', () => {
     invitePreview.value = invitePreviewResponseSchema.parse(await response.json()).party
   }
 
+  const joinParty = async (nicknameValue: string) => {
+    if (!pendingInviteToken.value) throw new Error('INVITE_NOT_AVAILABLE')
+    const nickname = nicknameSchema.parse(nicknameValue)
+    const response = await request('/memberships', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inviteToken: pendingInviteToken.value, nickname }),
+    })
+    if (!response.ok) {
+      const code: PartyJoinError = response.status === 404
+        ? 'INVITE_NOT_AVAILABLE'
+        : response.status === 409
+          ? 'ALREADY_IN_PARTY'
+          : 'PARTY_JOIN_FAILED'
+      throw new Error(code)
+    }
+
+    party.value = partyResponseSchema.parse(await response.json())
+    clearPendingInvite()
+  }
+
   return {
     accessToken,
     user,
@@ -303,5 +325,6 @@ export const useSessionStore = defineStore('session', () => {
     retainInvite,
     clearPendingInvite,
     loadInvitePreview,
+    joinParty,
   }
 })

@@ -32,7 +32,7 @@ Use one Git history with npm workspaces at `apps/client` and `apps/api`. Dockeri
 - Planning does not authorize implementation. Follow the next story in `.planning/mvp.md` and implement one independently verifiable story per request.
 - Record story status only in `.planning/mvp.md`; do not maintain parallel PRDs, story lists, or progress trackers.
 - Prefer the smallest working change; do not scaffold deferred features or speculative abstractions.
-- Organize unit and functional tests as named, table-driven happy-path and failure-path cases.
+- Prefer one named happy-path and one failure-path test per behavior; use table rows only for materially distinct branches.
 - Add proportionate checks and run relevant typecheck, lint, test, and build commands before completion.
 - Record durable decisions in planning documents or ADRs. Never record secrets.
 - Keep `AGENTS.md` and future `README.md` files concise, operational, and free of duplicated PRD detail.

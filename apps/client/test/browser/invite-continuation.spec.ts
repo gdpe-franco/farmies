@@ -34,8 +34,9 @@ const authResponse = {
 
 const cases = [
   {
-    name: 'English',
+    name: 'English sign-out',
     locale: 'en',
+    action: 'signOut',
     received: 'You received a Party invite',
     verificationError: 'That code is invalid or expired. Check the code and try again.',
     confirmation: 'Join this Party?',
@@ -43,8 +44,9 @@ const cases = [
     signOut: 'Sign out',
   },
   {
-    name: 'Spanish',
+    name: 'Spanish join',
     locale: 'es',
+    action: 'join',
     received: 'Recibiste una invitación a un grupo',
     verificationError: 'El código no es válido o venció. Revísalo e inténtalo de nuevo.',
     confirmation: '¿Unirte a este grupo?',
@@ -78,6 +80,24 @@ for (const testCase of cases) {
     await page.route(`http://localhost:8787/invites/${inviteToken}`, (route) => route.fulfill({
       json: { party: { displayName: 'Green Friends', occupancy: 4, capacity: 10 } },
     }))
+    const membership = {
+      party: {
+        id: '84',
+        displayName: 'Green Friends',
+        species: 'COW',
+        environment: 'PASTURE',
+        createdAt: '2026-09-11T08:00:00.000Z',
+      },
+      membership: {
+        id: '86',
+        nickname: 'Moss',
+        joinedAt: '2026-09-11T09:00:00.000Z',
+      },
+      isOwner: false,
+      inviteActive: true,
+    }
+    await page.route('http://localhost:8787/memberships', (route) => route.fulfill({ status: 201, json: membership }))
+    await page.route('http://localhost:8787/parties/current', (route) => route.fulfill({ json: membership }))
 
     await page.goto(`/invite/${inviteToken}`)
     if (testCase.locale === 'es') await page.locator('#locale').selectOption('es')
@@ -107,7 +127,18 @@ for (const testCase of cases) {
     await expect(page.getByRole('heading', { name: 'Green Friends' })).toBeVisible()
     await expect(page.getByText(testCase.occupancy)).toBeVisible()
 
-    await page.getByRole('button', { name: testCase.signOut }).click()
+    if (testCase.action === 'join') {
+      const nicknameLabel = testCase.locale === 'es' ? 'Apodo' : 'Nickname'
+      const joinLabel = testCase.locale === 'es' ? 'Unirse al grupo' : 'Join Party'
+      const welcome = testCase.locale === 'es'
+        ? 'Te damos la bienvenida a Green Friends'
+        : 'Welcome to Green Friends'
+      await page.getByLabel(nicknameLabel).fill('Moss')
+      await page.getByRole('button', { name: joinLabel }).click()
+      await expect(page.getByRole('heading', { name: welcome })).toBeVisible()
+    } else {
+      await page.getByRole('button', { name: testCase.signOut }).click()
+    }
     await expect.poll(() => page.evaluate(() => sessionStorage.getItem('farmies.pendingInviteToken')))
       .toBeNull()
   })

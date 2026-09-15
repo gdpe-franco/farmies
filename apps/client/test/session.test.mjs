@@ -78,6 +78,12 @@ const invite = {
 
 const inviteToken = 'a'.repeat(43)
 const invitePreview = { displayName: 'Green Friends', occupancy: 4, capacity: 10 }
+const joinedParty = {
+  ...createdParty,
+  membership: { ...createdParty.membership, nickname: 'Moss' },
+  isOwner: false,
+  inviteActive: true,
+}
 
 const createStorage = () => {
   const values = new Map()
@@ -94,11 +100,17 @@ const createFetcher = (
   currentPartyStatus = 200,
   inviteStatus = 201,
   invitePreviewStatus = 200,
+  membershipStatus = 201,
 ) => {
   const requests = []
   const fetcher = async (input, init) => {
     const url = String(input)
     requests.push({ url, init })
+    if (url.endsWith('/memberships')) {
+      return membershipStatus === 201 || membershipStatus === 200
+        ? Response.json(joinedParty, { status: membershipStatus })
+        : Response.json({ error: membershipStatus === 404 ? 'INVITE_NOT_AVAILABLE' : membershipStatus === 409 ? 'ALREADY_IN_PARTY' : 'PARTY_JOIN_FAILED' }, { status: membershipStatus })
+    }
     if (url.endsWith('/parties/current/invite')) {
       if (init.method === 'DELETE' && inviteStatus === 204) return new Response(null, { status: 204 })
       return inviteStatus === 201
@@ -562,6 +574,70 @@ test('Party creation', async (suite) => {
           api.requests.filter(({ url }) => url.endsWith('/parties')).length,
           testCase.expectedPartyRequests,
         )
+      })
+    }
+  })
+})
+
+test('Party joining', async (suite) => {
+  const happyCases = [
+    { name: 'joins with normalized input', status: 201 },
+    { name: 'accepts an idempotent retry response', status: 200 },
+  ]
+
+  await suite.test('happy path', async (happyPath) => {
+    for (const testCase of happyCases) {
+      await happyPath.test(testCase.name, async () => {
+        setActivePinia(createPinia())
+        const storage = createStorage()
+        const api = createFetcher(200, 201, 200, 201, 200, testCase.status)
+        const store = useSessionStore()
+        await store.initialize(
+          createAuth({ session: { access_token: 'valid-token' } }).client,
+          'https://api.farmies.test',
+          api.fetcher,
+          storage,
+        )
+        store.retainInvite(inviteToken)
+
+        await store.joinParty('  Moss  ')
+
+        assert.deepEqual(store.party, joinedParty)
+        assert.equal(store.pendingInviteToken, null)
+        assert.equal(storage.getItem('farmies.pendingInviteToken'), null)
+        const request = api.requests.at(-1)
+        assert.equal(request.url, 'https://api.farmies.test/memberships')
+        assert.deepEqual(JSON.parse(request.init.body), { inviteToken, nickname: 'Moss' })
+      })
+    }
+  })
+
+  const failureCases = [
+    { name: 'rejects an empty nickname before calling the API', nickname: '   ', status: 201, error: /too_small/, requests: 0 },
+    { name: 'preserves an unavailable invite for a retry', nickname: 'Moss', status: 404, error: /INVITE_NOT_AVAILABLE/, requests: 1 },
+    { name: 'reports an existing membership', nickname: 'Moss', status: 409, error: /ALREADY_IN_PARTY/, requests: 1 },
+  ]
+
+  await suite.test('failure path', async (failurePath) => {
+    for (const testCase of failureCases) {
+      await failurePath.test(testCase.name, async () => {
+        setActivePinia(createPinia())
+        const storage = createStorage()
+        const api = createFetcher(200, 201, 200, 201, 200, testCase.status)
+        const store = useSessionStore()
+        await store.initialize(
+          createAuth({ session: { access_token: 'valid-token' } }).client,
+          'https://api.farmies.test',
+          api.fetcher,
+          storage,
+        )
+        store.retainInvite(inviteToken)
+
+        await assert.rejects(store.joinParty(testCase.nickname), testCase.error)
+
+        assert.equal(store.party, null)
+        assert.equal(store.pendingInviteToken, inviteToken)
+        assert.equal(api.requests.filter(({ url }) => url.endsWith('/memberships')).length, testCase.requests)
       })
     }
   })

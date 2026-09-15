@@ -83,12 +83,23 @@ type FindInvitePreview = (
   bindings: Bindings,
   tokenHash: string,
 ) => Promise<InvitePreview | undefined>
+type JoinPartyResult =
+  | { status: 'joined' | 'already_joined'; value: PartyMembership }
+  | { status: 'already_member' }
+  | { status: 'invite_not_available' }
+  | { status: 'user_not_found' }
+type JoinParty = (
+  bindings: Bindings,
+  authUserId: string,
+  input: { inviteTokenHash: string; nickname: string },
+) => Promise<JoinPartyResult>
 
 type Dependencies = {
   createParty: CreateParty
   findCurrentParty: FindCurrentParty
   findOrCreateUser: FindOrCreateUser
   findInvitePreview: FindInvitePreview
+  joinParty: JoinParty
   manageInvite: ManageInvite
   updateUserLocale: UpdateUserLocale
 }
@@ -108,6 +119,11 @@ const partyRequestSchema = z.object({
   nickname: z.string().trim().min(1).max(40),
 }).strict()
 
+const membershipRequestSchema = z.object({
+  inviteToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  nickname: z.string().trim().min(1).max(40),
+}).strict()
+
 const userFields = {
   id: users.id,
   preferredLocale: users.preferredLocale,
@@ -116,6 +132,10 @@ const userFields = {
 }
 
 const unauthorized = () => new Response('Unauthorized', { status: 401 })
+const postgresErrorCode = (error: unknown) => {
+  const databaseError = error as { code?: string; cause?: { code?: string } }
+  return databaseError.code ?? databaseError.cause?.code
+}
 
 const openDatabase = (bindings: Bindings) => {
   const client = postgres(bindings.HYPERDRIVE.connectionString, {
@@ -250,7 +270,7 @@ const createParty: CreateParty = async (bindings, authUserId, input) => {
       }
     })
   } catch (error) {
-    if ((error as { code?: string }).code === '23505') return { status: 'already_member' }
+    if (postgresErrorCode(error) === '23505') return { status: 'already_member' }
     throw error
   } finally {
     await client.end()
@@ -333,6 +353,12 @@ const manageInvite: ManageInvite = async (bindings, authUserId, action) => {
         .limit(1)
       if (!party) return { status: 'owner_required' }
 
+      await transaction.execute(sql`
+        select id from ${parties}
+        where id = ${party.id} and deleted_at is null
+        for update
+      `)
+
       if (action === 'revoke') {
         await transaction
           .update(invites)
@@ -392,6 +418,113 @@ const findInvitePreview: FindInvitePreview = async (bindings, tokenHash) => {
   }
 }
 
+export const joinParty: JoinParty = async (bindings, authUserId, input) => {
+  const { client, database } = openDatabase(bindings)
+
+  try {
+    return await database.transaction(async (transaction) => {
+      const [user] = await transaction
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.authUserId, authUserId), isNull(users.deletedAt)))
+        .limit(1)
+      if (!user) return { status: 'user_not_found' }
+
+      const [candidate] = await transaction
+        .select({ partyId: invites.partyId })
+        .from(invites)
+        .innerJoin(parties, and(eq(parties.id, invites.partyId), isNull(parties.deletedAt)))
+        .where(and(
+          eq(invites.tokenHash, input.inviteTokenHash),
+          isNull(invites.revokedAt),
+          isNull(invites.deletedAt),
+          gt(invites.expiresAt, sql`now()`),
+        ))
+        .limit(1)
+      if (!candidate) return { status: 'invite_not_available' }
+
+      await transaction.execute(sql`
+        select id from ${parties}
+        where id = ${candidate.partyId} and deleted_at is null
+        for update
+      `)
+
+      const [target] = await transaction
+        .select({
+          id: parties.id,
+          ownerUserId: parties.ownerUserId,
+          displayName: parties.displayName,
+          species: species.code,
+          environment: environments.code,
+          createdAt: parties.createdAt,
+        })
+        .from(invites)
+        .innerJoin(parties, and(eq(parties.id, invites.partyId), isNull(parties.deletedAt)))
+        .innerJoin(species, eq(species.id, parties.speciesId))
+        .innerJoin(environments, eq(environments.id, parties.environmentId))
+        .where(and(
+          eq(parties.id, candidate.partyId),
+          eq(invites.tokenHash, input.inviteTokenHash),
+          isNull(invites.revokedAt),
+          isNull(invites.deletedAt),
+          gt(invites.expiresAt, sql`now()`),
+        ))
+        .limit(1)
+      if (!target) return { status: 'invite_not_available' }
+
+      const [existing] = await transaction
+        .select({ id: memberships.id, partyId: memberships.partyId, nickname: memberships.nickname, joinedAt: memberships.joinedAt })
+        .from(memberships)
+        .where(and(eq(memberships.userId, user.id), isNull(memberships.deletedAt)))
+        .limit(1)
+      if (existing) {
+        if (existing.partyId !== target.id) return { status: 'already_member' }
+        return {
+          status: 'already_joined',
+          value: {
+            party: target,
+            membership: existing,
+            isOwner: target.ownerUserId === user.id,
+            inviteActive: true,
+          },
+        }
+      }
+
+      const [{ occupancy }] = await transaction
+        .select({ occupancy: sql<number>`count(*)` })
+        .from(memberships)
+        .where(and(eq(memberships.partyId, target.id), isNull(memberships.deletedAt)))
+      if (Number(occupancy) >= 10) return { status: 'invite_not_available' }
+
+      await transaction.execute(sql`
+        insert into ${memberships} (party_id, user_id, nickname)
+        values (${target.id}, ${user.id}, ${input.nickname})
+      `)
+      const [membership] = await transaction
+        .select({ id: memberships.id, nickname: memberships.nickname, joinedAt: memberships.joinedAt })
+        .from(memberships)
+        .where(and(eq(memberships.userId, user.id), isNull(memberships.deletedAt)))
+        .limit(1)
+      if (!membership) throw new Error('Membership creation returned no row')
+
+      return {
+        status: 'joined',
+        value: {
+          party: target,
+          membership,
+          isOwner: target.ownerUserId === user.id,
+          inviteActive: true,
+        },
+      }
+    })
+  } catch (error) {
+    if (postgresErrorCode(error) === '23505') return { status: 'already_member' }
+    throw error
+  } finally {
+    await client.end()
+  }
+}
+
 const serializeUser = (user: ApplicationUser) => ({
   user: {
     id: user.id.toString(),
@@ -423,6 +556,7 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
   const getInvitePreview = dependencies.findInvitePreview ?? findInvitePreview
   const getCurrentParty = dependencies.findCurrentParty ?? findCurrentParty
   const getUser = dependencies.findOrCreateUser ?? findOrCreateUser
+  const joinCurrentParty = dependencies.joinParty ?? joinParty
   const updateInvite = dependencies.manageInvite ?? manageInvite
   const setUserLocale = dependencies.updateUserLocale ?? updateUserLocale
   const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -497,10 +631,20 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     })(context, next),
   )
 
+  app.use('/memberships', async (context, next) =>
+    cors({
+      origin: context.env.CLIENT_ORIGIN,
+      allowHeaders: ['Authorization', 'Content-Type'],
+      allowMethods: ['POST', 'OPTIONS'],
+      maxAge: 600,
+    })(context, next),
+  )
+
   app.use('/users/me', authenticate)
   app.use('/parties', authenticate)
   app.use('/parties/*', authenticate)
   app.use('/invites/*', authenticate)
+  app.use('/memberships', authenticate)
 
   app.put('/users/me', async (context) => {
     const user = await getUser(context.env, context.get('authUserId'))
@@ -592,6 +736,30 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
       return context.json({ party: { ...preview, capacity: 10 } })
     } catch {
       return context.json({ error: 'INVITE_LOAD_FAILED' }, 500)
+    }
+  })
+
+  app.post('/memberships', async (context) => {
+    const body = await context.req.json().catch(() => undefined)
+    const input = membershipRequestSchema.safeParse(body)
+    if (!input.success) return context.json({ error: 'INVALID_REQUEST' }, 400)
+
+    try {
+      const result = await joinCurrentParty(context.env, context.get('authUserId'), {
+        inviteTokenHash: await hashInviteToken(input.data.inviteToken),
+        nickname: input.data.nickname,
+      })
+      if (result.status === 'user_not_found') return unauthorized()
+      if (result.status === 'invite_not_available') {
+        return context.json({ error: 'INVITE_NOT_AVAILABLE' }, 404)
+      }
+      if (result.status === 'already_member') {
+        return context.json({ error: 'ALREADY_IN_PARTY' }, 409)
+      }
+
+      return context.json(serializeParty(result.value), result.status === 'joined' ? 201 : 200)
+    } catch {
+      return context.json({ error: 'PARTY_JOIN_FAILED' }, 500)
     }
   })
 
