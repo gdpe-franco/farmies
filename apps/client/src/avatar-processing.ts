@@ -102,13 +102,38 @@ export const drawAvatarCrop = (
 const canvasToBlob = (canvas: HTMLCanvasElement, quality: number) =>
   new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, avatarMediaType, quality))
 
+const stripWebpMetadata = async (blob: Blob) => {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  const view = new DataView(bytes.buffer)
+  const tag = (offset: number) => String.fromCharCode(...bytes.subarray(offset, offset + 4))
+  const fail = () => { throw new Error('ENCODE_FAILED' satisfies AvatarProcessingError) }
+  if (bytes.length < 12 || tag(0) !== 'RIFF' || tag(8) !== 'WEBP' || view.getUint32(4, true) !== bytes.length - 8) fail()
+  const parts = [bytes.slice(0, 12)]
+  for (let offset = 12; offset < bytes.length;) {
+    if (offset + 8 > bytes.length) fail()
+    const size = view.getUint32(offset + 4, true)
+    const end = offset + 8 + size + (size % 2)
+    if (end > bytes.length) fail()
+    const type = tag(offset)
+    const chunk = bytes.slice(offset, end)
+    if (type === 'VP8X') {
+      if (size !== 10) fail()
+      chunk[8] &= ~0x2c // ICC, EXIF, XMP flags; canvas pixels already use the default sRGB space.
+      if (chunk[8] !== 0) parts.push(chunk)
+    } else if (!['ICCP', 'EXIF', 'XMP '].includes(type)) parts.push(chunk)
+    offset = end
+  }
+  new DataView(parts[0].buffer).setUint32(4, parts.reduce((size, part) => size + part.length, 0) - 8, true)
+  return new Blob(parts, { type: avatarMediaType })
+}
+
 export const encodeAvatar = async (canvas: HTMLCanvasElement) => {
   for (const quality of qualities) {
     const output = await canvasToBlob(canvas, quality)
     if (!output || output.type !== avatarMediaType) {
       throw new Error('ENCODE_FAILED' satisfies AvatarProcessingError)
     }
-    if (output.size <= maxAvatarBytes) return output
+    if (output.size <= maxAvatarBytes) return stripWebpMetadata(output)
   }
 
   throw new Error('OUTPUT_TOO_LARGE' satisfies AvatarProcessingError)

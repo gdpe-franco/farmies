@@ -22,7 +22,7 @@
           {{ t('party.membership', { nickname: session.party.membership.nickname }) }}
         </p>
 
-        <avatar-setup />
+        <avatar-setup :key="session.party.membership.id" />
 
         <section
           v-if="session.party.isOwner"

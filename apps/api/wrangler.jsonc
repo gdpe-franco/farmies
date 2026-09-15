@@ -3,6 +3,9 @@
   "name": "farmies-api",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-09",
+  "r2_buckets": [
+    { "binding": "AVATARS", "bucket_name": "farmies-avatars" }
+  ],
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",

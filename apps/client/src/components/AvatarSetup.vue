@@ -22,20 +22,20 @@
       <q-btn
         color="primary"
         :label="t('avatar.choose')"
-        :disable="processing"
+        :disable="busy"
         @click="fileInput?.click()"
       />
       <q-btn
         outline
         color="primary"
         :label="t('avatar.takePhoto')"
-        :disable="processing"
+        :disable="busy"
         @click="cameraOpen = true"
       />
     </div>
 
     <div
-      v-if="processing"
+      v-if="busy"
       class="row items-center q-gutter-sm q-mt-md"
       role="status"
       aria-busy="true"
@@ -44,7 +44,7 @@
         color="primary"
         size="2em"
       />
-      <span>{{ t('avatar.processing') }}</span>
+      <span>{{ t(processing ? 'avatar.processing' : 'avatar.saving') }}</span>
     </div>
 
     <q-banner
@@ -56,7 +56,7 @@
     </q-banner>
 
     <div
-      v-if="preparedUrl"
+      v-if="preparedUrl || savedUrl"
       class="q-mt-md"
       role="status"
     >
@@ -65,21 +65,74 @@
         size="128px"
       >
         <img
-          :src="preparedUrl"
-          :alt="t('avatar.readyPreview')"
+          :src="preparedUrl || savedUrl!"
+          :alt="t(preparedUrl ? 'avatar.readyPreview' : 'avatar.savedPreview')"
         >
       </q-avatar>
       <p class="q-mt-sm">
-        {{ t('avatar.ready', { size: preparedSize }) }}
+        {{ preparedUrl ? t('avatar.ready', { size: preparedSize }) : t('avatar.saved') }}
       </p>
       <q-btn
+        v-if="preparedUrl && sourceImage"
         outline
         color="primary"
         :label="t('avatar.adjust')"
-        :disable="processing"
+        :disable="busy"
         @click="openEditor"
       />
+      <q-btn
+        v-if="preparedBlob"
+        class="q-ml-sm"
+        color="primary"
+        :label="t('avatar.save')"
+        :disable="busy"
+        @click="persistAvatar"
+      />
     </div>
+
+    <p v-if="!preparedUrl && !savedUrl && !busy && !loadFailed && !deleteRetry">
+      {{ t('avatar.empty') }}
+    </p>
+    <q-btn
+      v-if="savedUrl || deleteRetry"
+      class="q-mt-md"
+      outline
+      color="negative"
+      :label="t(deleteRetry ? 'avatar.retryDelete' : 'avatar.remove')"
+      :disable="busy"
+      @click="deleteConfirm = true"
+    />
+    <q-btn
+      v-if="loadFailed"
+      class="q-mt-md"
+      outline
+      :label="t('avatar.retryLoad')"
+      :disable="busy"
+      @click="restoreAvatar"
+    />
+    <q-dialog
+      v-model="deleteConfirm"
+      :persistent="saving"
+      :aria-label="t('avatar.remove')"
+    >
+      <q-card class="farmies-card camera-card">
+        <q-card-section>{{ t('avatar.deleteConfirm') }}</q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            flat
+            :label="t('avatar.cancelCrop')"
+            :disable="saving"
+            @click="deleteConfirm = false"
+          />
+          <q-btn
+            color="negative"
+            :label="t('avatar.remove')"
+            :loading="saving"
+            @click="removeAvatar"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
 
     <q-dialog
       v-model="cameraOpen"
@@ -234,8 +287,19 @@ import {
   type AvatarFace,
 } from '../avatar-processing'
 import { avatarCameraSource, avatarFileSource } from '../platform/avatar-source'
+import { deleteAvatar, loadAvatar, saveAvatar } from '../avatar-api'
+import { useSessionStore } from '../stores/session'
 
 const { t } = useI18n()
+const session = useSessionStore()
+const membershipId = session.party!.membership.id
+const savedUrl = ref<string | null>(null)
+const preparedBlob = shallowRef<Blob | null>(null)
+const saving = ref(false)
+const busy = computed(() => processing.value || saving.value)
+const deleteConfirm = ref(false)
+const deleteRetry = ref(false)
+const loadFailed = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const video = ref<HTMLVideoElement | null>(null)
 const cameraOpen = ref(false)
@@ -274,6 +338,79 @@ const clearPrepared = () => {
   if (preparedUrl.value) URL.revokeObjectURL(preparedUrl.value)
   preparedUrl.value = null
   preparedBytes.value = 0
+  preparedBlob.value = null
+}
+
+const clearSaved = () => {
+  if (savedUrl.value) URL.revokeObjectURL(savedUrl.value)
+  savedUrl.value = null
+}
+
+const restoreAvatar = async () => {
+  saving.value = true
+  loadFailed.value = false
+  errorKey.value = null
+  try {
+    const blob = await loadAvatar(session.request, membershipId)
+    if (disposed) return
+    clearSaved()
+    if (blob) savedUrl.value = URL.createObjectURL(blob)
+  } catch {
+    if (!disposed) {
+      loadFailed.value = true
+      errorKey.value = 'avatar.loadError'
+    }
+  } finally {
+    saving.value = false
+  }
+}
+
+const persistAvatar = async () => {
+  if (!preparedBlob.value || busy.value) return
+  saving.value = true
+  errorKey.value = null
+  try {
+    const blob = preparedBlob.value
+    await saveAvatar(session.request, membershipId, blob)
+    if (disposed) return
+    clearSaved()
+    savedUrl.value = URL.createObjectURL(blob)
+    clearPrepared()
+    sourceImage.value?.close()
+    sourceImage.value = null
+    sourceFaces = []
+    deleteRetry.value = false
+    loadFailed.value = false
+  } catch {
+    if (!disposed) errorKey.value = 'avatar.saveError'
+  } finally {
+    saving.value = false
+  }
+}
+
+const removeAvatar = async () => {
+  saving.value = true
+  errorKey.value = null
+  try {
+    await deleteAvatar(session.request, membershipId)
+    if (disposed) return
+    clearSaved()
+    clearPrepared()
+    sourceImage.value?.close()
+    sourceImage.value = null
+    deleteRetry.value = false
+    loadFailed.value = false
+  } catch (error) {
+    if (!disposed) {
+      deleteRetry.value = true
+      const pending = error instanceof Error && error.message === 'AVATAR_DELETE_RETRY'
+      if (pending) clearSaved()
+      errorKey.value = pending ? 'avatar.deleteRetryError' : 'avatar.deleteError'
+    }
+  } finally {
+    saving.value = false
+    deleteConfirm.value = false
+  }
 }
 
 const getDetector = () => {
@@ -311,6 +448,7 @@ const detectFaces = (activeDetector: FaceDetector, image: ImageBitmap | HTMLVide
 const showPrepared = (output: Blob) => {
   clearPrepared()
   preparedBytes.value = output.size
+  preparedBlob.value = output
   preparedUrl.value = URL.createObjectURL(output)
 }
 
@@ -475,7 +613,10 @@ const capturePhoto = async () => {
   }
 }
 
-onMounted(() => window.addEventListener('pagehide', closeCamera))
+onMounted(() => {
+  window.addEventListener('pagehide', closeCamera)
+  void restoreAvatar()
+})
 onBeforeUnmount(() => {
   disposed = true
   closeCamera()
@@ -483,6 +624,7 @@ onBeforeUnmount(() => {
   detector?.close()
   sourceImage.value?.close()
   clearPrepared()
+  clearSaved()
 })
 </script>
 

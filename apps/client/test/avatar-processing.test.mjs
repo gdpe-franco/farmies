@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { webp } from '../../api/test/fixtures/webp.mjs'
 
 import {
   avatarMediaType,
@@ -46,14 +47,29 @@ test('avatar processing', async (suite) => {
     const canvas = {
       toBlob: (callback, type, quality) => {
         qualities.push(quality)
-        const size = qualities.length === 1 ? maxAvatarBytes + 1 : 100
-        callback(new Blob([new Uint8Array(size)], { type }))
+        const bytes = qualities.length === 1 ? new Uint8Array(maxAvatarBytes + 1) : webp()
+        callback(new Blob([bytes], { type }))
       },
     }
     const output = await encodeAvatar(canvas)
     assert.equal(output.type, avatarMediaType)
-    assert.equal(output.size, 100)
+    assert.equal(output.size, 32)
     assert.deepEqual(qualities, [0.9, 0.75])
+    const metadataImage = new Uint8Array(80)
+    const metadataView = new DataView(metadataImage.buffer)
+    const tag = (offset, value) => metadataImage.set(new TextEncoder().encode(value), offset)
+    metadataImage.set(new Uint8Array(webp()).subarray(0, 12))
+    metadataView.setUint32(4, 72, true)
+    tag(12, 'VP8X'); metadataView.setUint32(16, 10, true)
+    metadataImage[20] = 0x2c
+    metadataImage.set([255, 1, 0, 255, 1, 0], 24)
+    for (const [index, type] of ['ICCP', 'EXIF', 'XMP '].entries()) {
+      tag(30 + index * 10, type)
+      metadataView.setUint32(34 + index * 10, 2, true)
+    }
+    metadataImage.set(new Uint8Array(webp()).subarray(12), 60)
+    const stripped = await encodeAvatar({ toBlob: (callback, type) => callback(new Blob([metadataImage], { type })) })
+    assert.deepEqual(await stripped.arrayBuffer(), webp(), 'generated metadata and its flags are removed')
   })
 
   await suite.test('failure path', async () => {
@@ -86,6 +102,7 @@ test('avatar processing', async (suite) => {
     for (const type of ['image/png', null]) {
       await assert.rejects(encodeAvatar({ toBlob: (callback) => callback(type ? new Blob(['image'], { type }) : null) }), /ENCODE_FAILED/)
     }
+    await assert.rejects(encodeAvatar({ toBlob: (callback, type) => callback(new Blob(['invalid-webp'], { type })) }), /ENCODE_FAILED/)
     await assert.rejects(encodeAvatar({ toBlob: (callback, type) => {
       callback(new Blob([new Uint8Array(maxAvatarBytes + 1)], { type }))
     } }), /OUTPUT_TOO_LARGE/)

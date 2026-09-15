@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
+import { validateAvatar } from '../../../api/src/avatars.ts'
 
 const facePhoto = await readFile(new URL('../fixtures/face.jpg', import.meta.url))
 
@@ -51,6 +52,27 @@ const party = {
 }
 
 const openAvatarSetup = async (page, locale) => {
+  const storage = { bytes: null, saveFails: false, deleteFails: false, loadFails: false, uploads: 0 }
+  await page.route('http://localhost:8787/parties/current/avatars/85', async (route) => {
+    const request = route.request()
+    expect(request.headers().authorization).toBe(`Bearer ${accessToken}`)
+    if (request.method() === 'PUT') {
+      expect(request.headers()['content-type']).toBe('image/webp')
+      const bytes = request.postDataBuffer()
+      expect(validateAvatar(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))).toBe(true)
+      if (storage.saveFails) return route.fulfill({ status: 500, json: { error: 'AVATAR_OPERATION_FAILED' } })
+      storage.bytes = bytes
+      return route.fulfill({ json: { version: ++storage.uploads } })
+    }
+    if (request.method() === 'DELETE') {
+      storage.bytes = null
+      return route.fulfill({ status: storage.deleteFails ? 503 : 204 })
+    }
+    if (storage.loadFails) return route.fulfill({ status: 500 })
+    return storage.bytes
+      ? route.fulfill({ contentType: 'image/webp', body: storage.bytes })
+      : route.fulfill({ status: 404 })
+  })
   await page.route('**/test-face.jpg', (route) => route.fulfill({ contentType: 'image/jpeg', body: facePhoto }))
   await page.route('**/auth/v1/otp', (route) => route.fulfill({ json: {} }))
   await page.route('**/auth/v1/verify', (route) => route.fulfill({ json: authResponse }))
@@ -78,6 +100,7 @@ const openAvatarSetup = async (page, locale) => {
   await expect(page.getByRole('heading', {
     name: locale === 'es' ? 'Avatar de vaca' : 'Cow avatar',
   })).toBeVisible()
+  return storage
 }
 
 const useCameraPhoto = async (page) => {
@@ -105,7 +128,7 @@ const useCameraPhoto = async (page) => {
 
 test('happy path automatically prepares camera and gallery faces in English', async ({ page }) => {
   await useCameraPhoto(page)
-  await openAvatarSetup(page, 'en')
+  const storage = await openAvatarSetup(page, 'en')
   await expect(page.locator('script[src*="vision_wasm"]')).toHaveCount(0)
   await page.getByRole('button', { name: 'Take a photo' }).click()
   await expect(page.getByRole('button', { name: 'Capture photo' })).toBeEnabled()
@@ -169,7 +192,22 @@ test('happy path automatically prepares camera and gallery faces in English', as
     })
     expect(edited).toMatchObject({ width: 512, height: 512, type: 'image/webp' })
     expect(edited.size).toBeLessThanOrEqual(512 * 1_024)
+    await page.getByRole('button', { name: 'Save avatar', exact: true }).click()
+    await expect(page.getByText('Your avatar is saved. Only your Party can see it.')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Save avatar', exact: true })).toHaveCount(0)
+    await page.reload()
+    await expect(page.getByRole('img', { name: 'Saved cow avatar', exact: true })).toBeVisible()
+    expect(storage.uploads).toBe(source === 'camera' ? 1 : 2)
   }
+  await page.getByRole('button', { name: 'Remove avatar', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByRole('img', { name: 'Saved cow avatar', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Remove avatar', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Remove avatar', exact: true }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByText('No saved avatar yet.')).toBeVisible()
+  expect(storage.bytes).toBeNull()
   await page.getByRole('button', { name: 'Take a photo' }).click()
   await expect(page.getByRole('button', { name: 'Capture photo' })).toBeEnabled()
   await page.keyboard.press('Escape')
@@ -192,7 +230,7 @@ test('happy path automatically prepares camera and gallery faces in English', as
 
 test('failure path handles camera failures and invalid files in Spanish', async ({ page }) => {
   await useCameraPhoto(page)
-  await openAvatarSetup(page, 'es')
+  const storage = await openAvatarSetup(page, 'es')
   await page.evaluate(() => { window.cameraTestBlank = true })
   await page.getByRole('button', { name: 'Tomar una foto' }).click()
   await expect(page.getByRole('button', { name: 'Capturar foto' })).toBeEnabled()
@@ -272,4 +310,26 @@ test('failure path handles camera failures and invalid files in Spanish', async 
   await page.evaluate(() => { HTMLCanvasElement.prototype.toBlob = window.originalToBlob })
   await page.getByRole('button', { name: 'Aplicar recorte' }).click()
   await expect(page.getByRole('slider')).toHaveCount(0)
+  storage.saveFails = true
+  await page.getByRole('button', { name: 'Guardar avatar', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('No pudimos guardar tu avatar.')
+  await expect(page.getByRole('img', { name: 'Avatar de vaca preparado' })).toBeVisible()
+  storage.saveFails = false
+  await page.getByRole('button', { name: 'Guardar avatar', exact: true }).click()
+  await expect(page.getByRole('img', { name: 'Avatar de vaca guardado' })).toBeVisible()
+  storage.loadFails = true
+  await page.reload()
+  await expect(page.getByRole('alert')).toContainText('No pudimos cargar tu avatar.')
+  storage.loadFails = false
+  await page.getByRole('button', { name: 'Reintentar carga del avatar' }).click()
+  await expect(page.getByRole('img', { name: 'Avatar de vaca guardado' })).toBeVisible()
+  storage.deleteFails = true
+  await page.getByRole('button', { name: 'Eliminar avatar', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Eliminar avatar', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('Tu avatar está oculto.')
+  await expect(page.getByRole('img', { name: 'Avatar de vaca guardado' })).toHaveCount(0)
+  storage.deleteFails = false
+  await page.getByRole('button', { name: 'Reintentar eliminación' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Eliminar avatar', exact: true }).click()
+  await expect(page.getByText('Aún no hay un avatar guardado.')).toBeVisible()
 })

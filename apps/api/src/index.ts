@@ -1,11 +1,13 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm'
-import { drizzle } from 'drizzle-orm/postgres-js'
 import { Hono } from 'hono'
 import type { MiddlewareHandler } from 'hono'
 import { cors } from 'hono/cors'
 import { verifyWithJwks } from 'hono/jwt'
-import postgres from 'postgres'
 import { z } from 'zod'
+import { bodyLimit } from 'hono/body-limit'
+
+import { manageAvatar, validateAvatar, type ManageAvatar } from './avatars.ts'
+import { openDatabase } from './db/index.ts'
 
 import {
   environments,
@@ -20,6 +22,7 @@ import {
 type Bindings = {
   CLIENT_ORIGIN: string
   HYPERDRIVE: Hyperdrive
+  AVATARS: R2Bucket
   SUPABASE_JWKS_URL?: string
   SUPABASE_URL: string
 }
@@ -95,6 +98,7 @@ type JoinParty = (
 ) => Promise<JoinPartyResult>
 
 type Dependencies = {
+  manageAvatar: ManageAvatar
   createParty: CreateParty
   findCurrentParty: FindCurrentParty
   findOrCreateUser: FindOrCreateUser
@@ -135,15 +139,6 @@ const unauthorized = () => new Response('Unauthorized', { status: 401 })
 const postgresErrorCode = (error: unknown) => {
   const databaseError = error as { code?: string; cause?: { code?: string } }
   return databaseError.code ?? databaseError.cause?.code
-}
-
-const openDatabase = (bindings: Bindings) => {
-  const client = postgres(bindings.HYPERDRIVE.connectionString, {
-    max: 1,
-    fetch_types: false,
-    prepare: true,
-  })
-  return { client, database: drizzle(client) }
 }
 
 export const createInviteSecret = async () => {
@@ -552,6 +547,7 @@ const serializeParty = ({ party, membership, isOwner, inviteActive }: PartyMembe
 })
 
 export const createApp = (dependencies: Partial<Dependencies> = {}) => {
+  const avatarOperation = dependencies.manageAvatar ?? manageAvatar
   const addParty = dependencies.createParty ?? createParty
   const getInvitePreview = dependencies.findInvitePreview ?? findInvitePreview
   const getCurrentParty = dependencies.findCurrentParty ?? findCurrentParty
@@ -617,7 +613,7 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     cors({
       origin: context.env.CLIENT_ORIGIN,
       allowHeaders: ['Authorization', 'Content-Type'],
-      allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+      allowMethods: ['GET', 'PUT', 'POST', 'DELETE', 'OPTIONS'],
       maxAge: 600,
     })(context, next),
   )
@@ -645,6 +641,45 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
   app.use('/parties/*', authenticate)
   app.use('/invites/*', authenticate)
   app.use('/memberships', authenticate)
+
+  app.use('/parties/current/avatars/*', bodyLimit({
+    maxSize: 524_288,
+    onError: (context) => context.json({ error: 'AVATAR_TOO_LARGE' }, 413),
+  }))
+
+  app.on(['GET', 'PUT', 'DELETE'], '/parties/current/avatars/:membershipId', async (context) => {
+    const membershipId = context.req.param('membershipId')!
+    if (!/^[1-9]\d{0,18}$/.test(membershipId) || BigInt(membershipId) > 9_223_372_036_854_775_807n) {
+      return context.json({ error: 'INVALID_REQUEST' }, 400)
+    }
+    let bytes: ArrayBuffer | undefined
+    if (context.req.method === 'PUT') {
+      if (context.req.header('Content-Type') !== 'image/webp') {
+        return context.json({ error: 'AVATAR_MEDIA_TYPE' }, 415)
+      }
+      bytes = await context.req.arrayBuffer()
+      if (!validateAvatar(bytes)) return context.json({ error: 'INVALID_AVATAR' }, 400)
+    }
+    context.header('Cache-Control', 'private, no-store')
+    try {
+      const result = await avatarOperation(context.env, context.get('authUserId'), {
+        membershipId: BigInt(membershipId),
+        action: context.req.method === 'PUT' ? 'save' : context.req.method === 'DELETE' ? 'delete' : 'read',
+        bytes,
+      })
+      if (result.status === 'not_found') return context.json({ error: 'AVATAR_NOT_FOUND' }, 404)
+      if (result.status === 'forbidden') return context.json({ error: 'AVATAR_OWNER_REQUIRED' }, 403)
+      if (result.status === 'cleanup_pending') return context.json({ error: 'AVATAR_DELETE_RETRY' }, 503)
+      if (result.status === 'deleted') return context.body(null, 204)
+      if (result.status === 'saved') return context.json({ version: result.version })
+      if (result.status !== 'read') throw new Error('Unexpected avatar result')
+      context.header('Content-Type', 'image/webp')
+      context.header('X-Content-Type-Options', 'nosniff')
+      return context.body(result.bytes)
+    } catch {
+      return context.json({ error: 'AVATAR_OPERATION_FAILED' }, 500)
+    }
+  })
 
   app.put('/users/me', async (context) => {
     const user = await getUser(context.env, context.get('authUserId'))
