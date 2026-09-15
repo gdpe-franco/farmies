@@ -9,6 +9,8 @@ Farmies is a private friend-group app. The MVP is one Party of at most 10 member
 ## Architecture
 
 - Client: Vue 3, TypeScript, Quasar, Pinia, Vue Router, PixiJS, Zod, and Capacitor adapters.
+- UI: compose reusable Vue components from Quasar primitives; use shared semantic light/dark theme tokens, not a second component library.
+- Preferences: locale options come from the language registry; locale/theme stores own changes and persistence, not UI components. Theme is device-local; locale syncs to the authenticated account.
 - API: Cloudflare Worker, Hono, Zod, Drizzle, Hyperdrive, and Supabase PostgreSQL.
 - Auth: Supabase email OTP; clients use Supabase directly only for authentication.
 - Files: private R2 objects served only through authorized Worker routes.

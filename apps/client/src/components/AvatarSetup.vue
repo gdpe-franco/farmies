@@ -1,6 +1,6 @@
 <template>
   <section
-    class="q-mt-lg"
+    class="farmies-panel q-mt-lg"
     aria-labelledby="avatar-title"
   >
     <h3
@@ -512,8 +512,8 @@ onBeforeUnmount(() => {
 }
 
 .face-overlay circle {
-  fill: var(--q-primary);
-  stroke: var(--farmies-yellow);
+  fill: var(--farmies-muted-teal);
+  stroke: var(--farmies-powder-blush);
   stroke-width: 0.004;
 }
 

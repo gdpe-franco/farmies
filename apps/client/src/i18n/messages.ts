@@ -1,10 +1,16 @@
-export type Locale = 'en' | 'es'
-
-export const locales: readonly Locale[] = ['en', 'es']
+export const languageOptions = [
+  { value: 'en', label: 'English' },
+  { value: 'es', label: 'Español' },
+] as const
+export type Locale = typeof languageOptions[number]['value']
+export const locales: readonly Locale[] = languageOptions.map(({ value }) => value)
+export const defaultLocale: Locale = 'en'
 
 export const messages = {
   en: {
     navigation: { home: 'Home', party: 'Party', settings: 'Settings' },
+    theme: { label: 'Theme', light: 'Light', dark: 'Dark', system: 'Follow system' },
+    preferences: { syncError: 'Language changed on this device, but could not be saved to your account. Select it again to retry.' },
     authentication: {
       title: 'Sign in to Farmies',
       introduction: 'We will email you a six-digit sign-in code.',
@@ -127,6 +133,8 @@ export const messages = {
   },
   es: {
     navigation: { home: 'Inicio', party: 'Grupo', settings: 'Ajustes' },
+    theme: { label: 'Tema', light: 'Claro', dark: 'Oscuro', system: 'Seguir al sistema' },
+    preferences: { syncError: 'El idioma cambió en este dispositivo, pero no se guardó en tu cuenta. Selecciónalo de nuevo para reintentar.' },
     authentication: {
       title: 'Inicia sesión en Farmies',
       introduction: 'Te enviaremos un código de seis dígitos por correo.',

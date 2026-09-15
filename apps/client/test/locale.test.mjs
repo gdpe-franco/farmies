@@ -4,7 +4,7 @@ import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { i18n } from '../src/i18n/index.ts'
-import { isLocale, messages } from '../src/i18n/messages.ts'
+import { isLocale, locales, messages } from '../src/i18n/messages.ts'
 import { useLocaleStore } from '../src/stores/locale.ts'
 
 const createStorage = (initialValue = null) => {
@@ -92,6 +92,32 @@ test('locale store', async (suite) => {
         assert.deepEqual(auth.updates, testCase.expectedUpdates)
       })
     }
+    // A slow earlier request must not overwrite the final language choice.
+    setActivePinia(createPinia())
+    let release
+    let active = 0
+    const updates = []
+    const session = {
+      isAuthenticated: true,
+      user: { preferredLocale: 'en' },
+      updateLocale: async (value) => {
+        active += 1
+        assert.equal(active, 1)
+        updates.push(value)
+        if (value === 'es') await new Promise((resolve) => { release = resolve })
+        session.user = { preferredLocale: value }
+        active -= 1
+      },
+    }
+    const store = useLocaleStore()
+    await store.initialize(session, createStorage())
+    const first = store.select('es')
+    await Promise.resolve()
+    const second = store.select('en')
+    release()
+    await Promise.all([first, second])
+    assert.deepEqual(updates, ['es', 'en'])
+    assert.equal(session.user.preferredLocale, store.locale)
   })
 
   const failureCases = [
@@ -109,6 +135,18 @@ test('locale store', async (suite) => {
       selectedLocale: 'es',
       expectedLocale: 'es',
     },
+    {
+      name: 'applies a choice even when device storage is blocked',
+      blockedStorage: true,
+      selectedLocale: 'es',
+      expectedLocale: 'es',
+    },
+    {
+      name: 'rejects an unsupported selection without changing the current locale',
+      selectedLocale: 'fr',
+      rejects: true,
+      expectedLocale: 'en',
+    },
   ]
 
   await suite.test('failure path', async (failurePath) => {
@@ -116,14 +154,18 @@ test('locale store', async (suite) => {
       await failurePath.test(testCase.name, async () => {
         setActivePinia(createPinia())
         i18n.global.locale.value = 'en'
-        const storage = createStorage(testCase.savedLocale)
+        const storage = testCase.blockedStorage
+          ? { getItem: () => { throw new Error('Blocked') }, setItem: () => { throw new Error('Blocked') } }
+          : createStorage(testCase.savedLocale)
         const auth = createSession(testCase)
         const store = useLocaleStore()
 
         await store.initialize(auth.session, storage)
-        if (testCase.selectedLocale) await store.select(testCase.selectedLocale)
+        if (testCase.rejects) await assert.rejects(store.select(testCase.selectedLocale), /Unsupported locale/)
+        else if (testCase.selectedLocale) await store.select(testCase.selectedLocale)
 
         assert.equal(store.locale, testCase.expectedLocale)
+        assert.equal(store.syncFailed, Boolean(testCase.rejectUpdate))
       })
     }
   })
@@ -136,10 +178,11 @@ test('translation messages', async (suite) => {
   })
 
   await suite.test('happy path', () => {
-    assert.deepEqual(flattenKeys(messages.es), flattenKeys(messages.en))
+    assert.deepEqual(Object.keys(messages), [...locales])
+    for (const locale of locales) assert.deepEqual(flattenKeys(messages[locale]), flattenKeys(messages.en))
 
     const values = { name: 'Los Compas', nickname: 'Niña 🐮' }
-    for (const locale of ['en', 'es']) {
+    for (const locale of locales) {
       i18n.global.locale.value = locale
       assert.match(i18n.global.t('party.welcome', values), /Los Compas/)
       assert.match(i18n.global.t('party.member', values), /Niña 🐮/)

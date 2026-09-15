@@ -67,7 +67,10 @@ const openAvatarSetup = async (page, locale) => {
   await page.route('http://localhost:8787/parties/current', (route) => route.fulfill({ json: party }))
 
   await page.goto('/')
-  if (locale === 'es') await page.locator('#locale').selectOption('es')
+  if (locale === 'es') {
+    await page.getByRole('button', { name: 'Language', exact: true }).click()
+    await page.getByRole('menuitemradio', { name: 'Español', exact: true }).click()
+  }
   await page.getByLabel(locale === 'es' ? 'Correo electrónico' : 'Email').fill('friend@example.com')
   await page.getByRole('button', { name: locale === 'es' ? 'Enviar código' : 'Send code' }).click()
   await page.getByLabel(locale === 'es' ? 'Código de seis dígitos' : 'Six-digit code').fill('123456')
@@ -113,7 +116,7 @@ test('happy path automatically prepares camera and gallery faces in English', as
     x: Number(dot.getAttribute('cx')),
     y: Number(dot.getAttribute('cy')),
   }))
-  expect(overlay).toMatchObject({ fill: 'rgb(39, 103, 73)', stroke: 'rgb(244, 201, 93)' })
+  expect(overlay).toMatchObject({ fill: 'rgb(148, 168, 154)', stroke: 'rgb(239, 176, 161)' })
   expect(overlay.x).toBeGreaterThan(0)
   expect(overlay.x).toBeLessThan(1)
   expect(overlay.y).toBeGreaterThan(0)

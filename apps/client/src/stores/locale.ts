@@ -1,19 +1,23 @@
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import { i18n } from '../i18n/index.ts'
-import { isLocale, type Locale } from '../i18n/messages.ts'
+import { defaultLocale, languageOptions, isLocale, type Locale } from '../i18n/messages.ts'
+import { readPreference, writePreference, type PreferenceStorage } from '../platform/preference-storage.ts'
 import type { useSessionStore } from './session.ts'
 
 type SessionStore = ReturnType<typeof useSessionStore>
-type LocaleStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 const storageKey = 'farmies.locale'
 
 export const useLocaleStore = defineStore('locale', () => {
-  const locale = ref<Locale>('en')
+  const locale = ref<Locale>(defaultLocale)
+  const syncFailed = ref(false)
+  const currentLanguage = computed(() => languageOptions.find(({ value }) => value === locale.value) ?? languageOptions[0])
   let session: SessionStore | undefined
-  let storage: LocaleStorage | undefined
+  let storage: PreferenceStorage | undefined
+  let chosenLocale: Locale | undefined
+  let pendingSync = Promise.resolve()
 
   const apply = (value: Locale) => {
     locale.value = value
@@ -21,44 +25,67 @@ export const useLocaleStore = defineStore('locale', () => {
     if (globalThis.document) document.documentElement.lang = value
   }
 
-  const select = async (value: Locale) => {
-    apply(value)
-    storage?.setItem(storageKey, value)
-    if (session?.isAuthenticated) await session.updateLocale(value).catch(() => undefined)
+  const sync = (value: Locale) => {
+    pendingSync = pendingSync.then(async () => {
+      if (value !== locale.value) return
+      syncFailed.value = false
+      if (session?.isAuthenticated && session.user?.preferredLocale !== value) {
+        await session.updateLocale(value).catch(() => {
+          if (value === locale.value) syncFailed.value = true
+        })
+      }
+    })
+    return pendingSync
   }
 
-  const initialize = async (sessionStore: SessionStore, localeStorage: LocaleStorage = localStorage) => {
+  const select = async (value: unknown) => {
+    if (!isLocale(value)) throw new TypeError('Unsupported locale')
+    chosenLocale = value
+    apply(value)
+    writePreference(storageKey, value, storage)
+    await sync(value)
+  }
+
+  const initialize = async (sessionStore: SessionStore, localeStorage?: PreferenceStorage) => {
     session = sessionStore
     storage = localeStorage
 
-    const savedLocale = storage.getItem(storageKey)
+    const savedLocale = readPreference(storageKey, storage)
     if (isLocale(savedLocale)) {
+      chosenLocale = savedLocale
       apply(savedLocale)
       if (session.isAuthenticated && session.user?.preferredLocale !== savedLocale) {
-        await session.updateLocale(savedLocale).catch(() => undefined)
+        await sync(savedLocale)
       }
     } else {
       const userLocale = session.user?.preferredLocale
       if (isLocale(userLocale)) {
         apply(userLocale)
-        storage.setItem(storageKey, userLocale)
+        writePreference(storageKey, userLocale, storage)
+      } else {
+        apply(defaultLocale)
       }
     }
 
     watch(() => sessionStore.user, (user) => {
-      if (!user) return
+      if (!user) {
+        syncFailed.value = false
+        return
+      }
 
-      const localLocale = storage?.getItem(storageKey)
+      const localLocale = chosenLocale ?? readPreference(storageKey, storage)
       if (isLocale(localLocale)) {
         if (user.preferredLocale !== localLocale) {
-          void sessionStore.updateLocale(localLocale).catch(() => undefined)
+          void sync(localLocale)
         }
       } else {
-        apply(user.preferredLocale)
-        storage?.setItem(storageKey, user.preferredLocale)
+        if (isLocale(user.preferredLocale)) {
+          apply(user.preferredLocale)
+          writePreference(storageKey, user.preferredLocale, storage)
+        }
       }
     })
   }
 
-  return { locale, initialize, select }
+  return { locale, currentLanguage, syncFailed, initialize, select }
 })

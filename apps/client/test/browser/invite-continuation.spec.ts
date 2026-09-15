@@ -100,7 +100,10 @@ for (const testCase of cases) {
     await page.route('http://localhost:8787/parties/current', (route) => route.fulfill({ json: membership }))
 
     await page.goto(`/invite/${inviteToken}`)
-    if (testCase.locale === 'es') await page.locator('#locale').selectOption('es')
+    if (testCase.locale === 'es') {
+      await page.getByRole('button', { name: 'Language', exact: true }).click()
+      await page.getByRole('menuitemradio', { name: 'Español', exact: true }).click()
+    }
     await expect(page.getByText(testCase.received)).toBeVisible()
     await expect.poll(() => page.evaluate(() => sessionStorage.getItem('farmies.pendingInviteToken')))
       .toBe(inviteToken)

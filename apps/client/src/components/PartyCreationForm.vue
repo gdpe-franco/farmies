@@ -24,7 +24,10 @@
 
         <avatar-setup />
 
-        <section v-if="session.party.isOwner">
+        <section
+          v-if="session.party.isOwner"
+          class="farmies-panel q-mt-md"
+        >
           <h3 class="text-h6 q-mb-sm">
             {{ t('invite.title') }}
           </h3>
