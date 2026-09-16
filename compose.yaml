@@ -19,6 +19,16 @@ services:
       - .:/workspace
       - api_node_modules:/workspace/node_modules
 
+  aseprite:
+    profiles: [art]
+    build:
+      context: tools/aseprite
+      args:
+        ASEPRITE_VERSION: v1.3.18.5
+    working_dir: /workspace/assets
+    volumes:
+      - ./apps/client/src/assets/farm:/workspace/assets
+
 volumes:
   client_node_modules:
   api_node_modules:

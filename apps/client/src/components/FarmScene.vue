@@ -128,7 +128,6 @@ const refresh = async () => {
     if (disposed || requestGeneration !== generation) { cleanup(); return }
     destroy = cleanup
     faces.value = loadedFaces
-    data.value = scene
     avatarFailed.value = missing
     currentTime.value = Date.now() + timeOffset
   } catch {

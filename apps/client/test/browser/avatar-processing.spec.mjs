@@ -139,15 +139,21 @@ for (const locale of ['en', 'es']) {
     await openAvatarSetup(page, locale)
     await expect(page.locator('.scene-canvas canvas')).toBeVisible()
     const alpha = await page.evaluate(async () => {
-      const { decodeCowAtlas, decodeCowHeads } = await import('/src/farm-assets.ts')
-      const bitmap = await decodeCowAtlas(await fetch('/src/assets/farm/cow-atlas.png').then(response => response.blob()))
-      const heads = await decodeCowHeads(bitmap)
+      const { default: atlasData } = await import('/src/assets/farm/cow-atlas.json')
+      const [bitmap, masks] = await Promise.all([
+        fetch('/src/assets/farm/cow-atlas.png').then(response => response.blob()).then(createImageBitmap),
+        fetch('/src/assets/farm/cow-head-masks.png').then(response => response.blob()).then(createImageBitmap),
+      ])
+      const heads = atlasData.meta.slices
+        .sort((a, b) => Number(a.name.slice(5)) - Number(b.name.slice(5)))
+        .map(({ keys: [key] }) => ({ x: key.bounds.x, y: key.bounds.y, width: key.bounds.w, height: key.bounds.h,
+          centerX: key.bounds.x + key.pivot.x, centerY: key.bounds.y + key.pivot.y }))
       const bounds = heads.map(head => ({ width: head.width, height: head.height }))
       for (const [index, head] of heads.entries()) {
         const maskCanvas = document.createElement('canvas')
         maskCanvas.width = maskCanvas.height = 256
         const maskContext = maskCanvas.getContext('2d')
-        maskContext.drawImage(head.bitmap, 0, 0)
+        maskContext.drawImage(masks, index % 4 * 256, Math.floor(index / 4) * 256, 256, 256, 0, 0, 256, 256)
         const mask = maskContext.getImageData(0, 0, 256, 256).data
         const bodyCanvas = document.createElement('canvas')
         bodyCanvas.width = bodyCanvas.height = 256
@@ -181,19 +187,19 @@ for (const locale of ['en', 'es']) {
             centerX += position % 256; centerY += Math.floor(position / 256); maskCount++
           }
         }
-        if (Math.abs(centerX / maskCount - head.centerX) > 0.01 || Math.abs(centerY / maskCount - head.centerY) > 0.01) throw new Error('Off-center face')
+        if (Math.abs(centerX / maskCount - head.centerX) > 0.51 || Math.abs(centerY / maskCount - head.centerY) > 0.51) throw new Error('Off-center face')
         for (let y = head.y; y < head.y + head.height; y++) {
           const row = []
           for (let x = head.x; x < head.x + head.width; x++) if (mask[(y * 256 + x) * 4 + 3]) row.push(x)
           if (row.length && row.at(-1) - row[0] + 1 !== row.length) throw new Error('Avatar mask contains line gaps')
         }
-        head.bitmap.close()
       }
       const canvas = document.createElement('canvas')
       canvas.width = canvas.height = 1024
       const context = canvas.getContext('2d')
       context.drawImage(bitmap, 0, 0)
       bitmap.close()
+      masks.close()
       const pixel = (x, y) => context.getImageData(x, y, 1, 1).data[3]
       return { outside: [pixel(0, 0), pixel(256, 0), pixel(512, 0), pixel(1023, 1023)],
         faces: [pixel(80, 127), pixel(83, 381), pixel(80, 706), pixel(78, 913)], bounds }
@@ -205,16 +211,6 @@ for (const locale of ['en', 'es']) {
       expect(head.width).toBeGreaterThan(60)
       expect(head.height).toBeGreaterThan(60)
     }
-    await page.evaluate(async () => {
-      const { decodeCowHeads } = await import('/src/farm-assets.ts')
-      const blank = await createImageBitmap(new ImageData(1024, 1024))
-      try {
-        await decodeCowHeads(blank)
-        throw new Error('Invalid head accepted')
-      } catch (error) {
-        if (error.message !== 'COW_HEAD_MASK_INVALID') throw error
-      } finally { blank.close() }
-    })
     const photo = await page.evaluate(async () => {
       const canvas = document.createElement('canvas')
       canvas.width = canvas.height = 512

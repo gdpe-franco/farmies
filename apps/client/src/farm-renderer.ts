@@ -1,10 +1,9 @@
-import { AnimatedSprite, Application, Container, Graphics, Rectangle, Sprite, Text, Texture } from 'pixi.js'
+import { Application, Container, Graphics, Rectangle, Sprite, Text, Texture } from 'pixi.js'
 import pastureUrl from './assets/farm/pasture.png'
 import cowUrl from './assets/farm/cow-atlas.png'
-import { decodeCowAtlas, decodeCowHeads } from './farm-assets'
+import cowMaskUrl from './assets/farm/cow-head-masks.png'
+import cowAtlas from './assets/farm/cow-atlas.json'
 import { activityAt, coverTransform, pasturePosition, sceneLayout, stableSeed, type Activity, type SceneData } from './farm-scene'
-
-const cowRows: Record<Activity, number> = { idle: 0, walking: 1, grazing: 2, eating: 2, sleeping: 3 }
 
 // Renderer objects and animation mapping stay outside Vue and API contracts.
 export const createFarmRenderer = async (
@@ -25,11 +24,11 @@ export const createFarmRenderer = async (
     bitmaps.forEach(bitmap => bitmap.close())
   }
   try {
-    const load = async (url: string, size: number) => {
+    const load = async (url: string, resizeWidth?: number) => {
       const response = await fetch(url)
       if (!response.ok) throw new Error('SCENE_ASSET_LOAD_FAILED')
       const blob = await response.blob()
-      const bitmap = url === cowUrl ? await decodeCowAtlas(blob) : await createImageBitmap(blob, { resizeWidth: size })
+      const bitmap = resizeWidth ? await createImageBitmap(blob, { resizeWidth }) : await createImageBitmap(blob)
       bitmaps.push(bitmap)
       const texture = Texture.from(bitmap)
       texture.source.scaleMode = 'nearest'
@@ -38,15 +37,20 @@ export const createFarmRenderer = async (
     }
     // Owned textures prevent a global cache retaining private image sources.
     const background = await load(pastureUrl, 768)
-    const atlas = await load(cowUrl, 1024)
-    const heads = await decodeCowHeads(bitmaps[1]!)
-    const headMasks = heads.map(head => {
-      bitmaps.push(head.bitmap)
-      const texture = Texture.from(head.bitmap)
-      texture.source.scaleMode = 'nearest'
-      textures.push(texture)
-      return texture
-    })
+    const atlas = await load(cowUrl)
+    const maskAtlas = await load(cowMaskUrl)
+    const frames = cowAtlas.frames.map(({ frame }) => new Texture({ source: atlas.source,
+      frame: new Rectangle(frame.x, frame.y, frame.w, frame.h) }))
+    const headMasks = cowAtlas.frames.map(({ frame }) => new Texture({ source: maskAtlas.source,
+      frame: new Rectangle(frame.x, frame.y, frame.w, frame.h) }))
+    const heads = [...cowAtlas.meta.slices]
+      .sort((a, b) => Number(a.name.slice(5)) - Number(b.name.slice(5)))
+      .map(({ keys: [key] }) => ({
+        x: key!.bounds.x, y: key!.bounds.y, width: key!.bounds.w, height: key!.bounds.h,
+        centerX: key!.bounds.x + key!.pivot.x, centerY: key!.bounds.y + key!.pivot.y,
+      }))
+    const animationFrames = Object.fromEntries(cowAtlas.meta.frameTags.map(tag =>
+      [tag.name, Array.from({ length: tag.to - tag.from + 1 }, (_, index) => tag.from + index)])) as Record<Activity, number[]>
     await app.init({ width: Math.max(160, host.clientWidth), height: 300, background: colors.sky,
       resolution: 1, autoDensity: true, preference: 'webgl', powerPreference: 'low-power', antialias: false,
     })
@@ -63,13 +67,10 @@ export const createFarmRenderer = async (
       world.addChild(tuft)
       return { tuft, seed: stableSeed(`grass:${i}`) }
     })
-    const rows = Array.from({ length: 4 }, (_, row) => Array.from({ length: 4 }, (_, column) =>
-      new Texture({ source: atlas.source, frame: new Rectangle(column * 256, row * 256, 256, 256) })))
     const cows = scene.members.map(member => {
       const animal = new Container()
-      const body = new AnimatedSprite(rows[0]!)
+      const body = new Sprite(frames[animationFrames.idle[0]!]!)
       body.anchor.set(0.5, 0.9)
-      body.autoUpdate = false
       animal.addChild(body)
       const face = new Container()
       const mask = new Sprite(headMasks[0]!)
@@ -109,7 +110,7 @@ export const createFarmRenderer = async (
       animal.addChild(sleep)
       world.addChild(animal, label)
       return { animal, body, face, photo, mask, placeholderEyes, sleepEyes, sleep, label, name, chip, member,
-        x: 0, y: 0, row: 0, scale: 1, direction: stableSeed(member.membershipId) % 2 ? 1 : -1 }
+        x: 0, y: 0, scale: 1, direction: stableSeed(member.membershipId) % 2 ? 1 : -1 }
     })
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)')
     const resize = () => {
@@ -137,22 +138,21 @@ export const createFarmRenderer = async (
       grass.forEach(({ tuft, seed }) => { tuft.skew.x = motion.matches ? 0 : Math.sin(time / 2600 + seed) * 0.12 })
       cows.forEach(entry => {
         const state = activityAt(scene.party.id, entry.member, time)
-        const row = cowRows[state]
         const seed = stableSeed(entry.member.membershipId)
         const seconds = time / 1000 + seed % 23
         const moving = !motion.matches
         const speed = state === 'walking' ? 5 : state === 'grazing' || state === 'eating' ? 3 : 1.5
         const frame = moving ? Math.floor(seconds * speed) % 4 : 0
-        if (entry.row !== row) { entry.body.textures = rows[row]!; entry.row = row }
-        entry.body.gotoAndStop(frame)
-        const head = heads[row * 4 + frame]!
+        const atlasFrame = animationFrames[state][frame]!
+        entry.body.texture = frames[atlasFrame]!
+        const head = heads[atlasFrame]!
         entry.face.position.set(head.centerX - 128, head.centerY - 256 * 0.9)
         entry.face.scale.set(head.width / 100, head.height / 100)
         // Photos replace the entire face: center on the mask bounds and overscan slightly so
         // no coat backing can appear as a detached muzzle at any pose or facing direction.
         entry.photo?.position.set((head.x + head.width / 2 - head.centerX) * 100 / head.width,
           (head.y + head.height / 2 - head.centerY) * 100 / head.height)
-        entry.mask.texture = headMasks[row * 4 + frame]!
+        entry.mask.texture = headMasks[atlasFrame]!
         const blinking = moving && seconds % 7 > 6.8
         if (entry.placeholderEyes) entry.placeholderEyes.visible = state !== 'sleeping' && !blinking
         entry.sleepEyes.visible = !!entry.placeholderEyes && (state === 'sleeping' || blinking)
