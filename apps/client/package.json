@@ -15,6 +15,7 @@
     "@mediapipe/tasks-vision": "1.0.1",
     "@supabase/supabase-js": "^2.116.0",
     "pinia": "^4.0.3",
+    "pixi.js": "^8.20.1",
     "quasar": "^2.31.0",
     "vue": "^3.5.42",
     "vue-i18n": "^11.4.10",

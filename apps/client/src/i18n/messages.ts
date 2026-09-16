@@ -8,6 +8,13 @@ export const defaultLocale: Locale = 'en'
 
 export const messages = {
   en: {
+    scene: {
+      title: 'Our pasture', description: 'Everyone in your Party has a cow here. Refresh to see new members and photos.',
+      refresh: 'Refresh pasture', loading: 'Loading your pasture…', error: 'We could not load your pasture. Try refreshing.',
+      avatarError: 'Some photos could not load. Their cows use a placeholder; refresh to try again.',
+      members: 'Pasture members', placeholder: 'Placeholder face',
+      idle: 'Resting', walking: 'Walking', grazing: 'Grazing', eating: 'Eating', sleeping: 'Sleeping',
+    },
     navigation: { home: 'Home', party: 'Party', settings: 'Settings' },
     theme: { label: 'Theme', light: 'Light', dark: 'Dark', system: 'Follow system' },
     preferences: { syncError: 'Language changed on this device, but could not be saved to your account. Select it again to retry.' },
@@ -143,6 +150,13 @@ export const messages = {
     home: { ready: 'Client is ready.' },
   },
   es: {
+    scene: {
+      title: 'Nuestro prado', description: 'Cada miembro de tu grupo tiene una vaca aquí. Actualiza para ver nuevos miembros y fotos.',
+      refresh: 'Actualizar prado', loading: 'Cargando tu prado…', error: 'No pudimos cargar tu prado. Intenta actualizar.',
+      avatarError: 'No pudimos cargar algunas fotos. Sus vacas usan una cara provisional; actualiza para reintentar.',
+      members: 'Miembros del prado', placeholder: 'Cara provisional',
+      idle: 'Descansando', walking: 'Caminando', grazing: 'Pastando', eating: 'Comiendo', sleeping: 'Durmiendo',
+    },
     navigation: { home: 'Inicio', party: 'Grupo', settings: 'Ajustes' },
     theme: { label: 'Tema', light: 'Claro', dark: 'Oscuro', system: 'Seguir al sistema' },
     preferences: { syncError: 'El idioma cambió en este dispositivo, pero no se guardó en tu cuenta. Selecciónalo de nuevo para reintentar.' },

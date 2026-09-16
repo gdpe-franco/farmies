@@ -22,7 +22,14 @@
           {{ t('party.membership', { nickname: session.party.membership.nickname }) }}
         </p>
 
-        <avatar-setup :key="session.party.membership.id" />
+        <farm-scene
+          :key="session.party.membership.id"
+          :revision="sceneRevision"
+        />
+        <avatar-setup
+          :key="session.party.membership.id"
+          @changed="sceneRevision++"
+        />
 
         <section
           v-if="session.party.isOwner"
@@ -142,10 +149,12 @@ import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import AvatarSetup from './AvatarSetup.vue'
+import FarmScene from './FarmScene.vue'
 import { nicknameSchema, partyNameSchema, useSessionStore } from '../stores/session'
 
 const { locale, t } = useI18n()
 const session = useSessionStore()
+const sceneRevision = ref(0)
 const displayName = ref('')
 const nickname = ref('')
 const loading = ref(false)
@@ -238,6 +247,6 @@ onMounted(async () => {
 
 <style scoped>
 .party-card {
-  width: min(100%, 28rem);
+  width: min(100%, 56rem);
 }
 </style>

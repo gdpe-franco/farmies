@@ -6,6 +6,7 @@ import postgres from 'postgres'
 import { createTestHarness } from 'wrangler'
 
 import { manageAvatar } from '../src/avatars.ts'
+import { findScene } from '../src/scene.ts'
 import { webp } from './fixtures/webp.mjs'
 
 if (existsSync(new URL('../.env', import.meta.url))) process.loadEnvFile(new URL('../.env', import.meta.url))
@@ -85,6 +86,13 @@ test('private avatar persistence', { skip: !adminUrl || !runtimeUrl }, async (su
     })
     await suite.test('happy path', async () => {
       assert.deepEqual(await operation('save'), { status: 'saved', version: 1 })
+      const scene = await findScene(bindings, authIds[1])
+      assert.equal(scene.party.species, 'COW')
+      assert.equal(scene.party.environment.definition.scene, 'PASTURE')
+      assert.deepEqual(scene.members.map(member => member.membershipId), ids.slice(0, 2).map(String))
+      assert.deepEqual(scene.members.map(member => member.avatarVersion), [1, null])
+      assert.deepEqual((await findScene(bindings, authIds[2])).members.map(member => member.membershipId), [String(ids[2])])
+      assert.equal(await findScene(bindings, '00000000-0000-4000-8000-000000009099'), undefined)
       assert.deepEqual((await operation('read', 1)).bytes, webp(), 'another current member may read')
       const replacements = await Promise.all([operation('save'), operation('save')])
       assert.deepEqual(replacements.map((value) => value.version).sort(), [2, 3])
@@ -115,6 +123,9 @@ test('private avatar persistence', { skip: !adminUrl || !runtimeUrl }, async (su
       const image = await harness.fetch(url, { headers })
       assert.equal(image.status, 200)
       assert.deepEqual(await image.arrayBuffer(), webp())
+      const roster = await harness.fetch('/parties/current/scene', { headers })
+      assert.equal(roster.status, 200)
+      assert.equal((await roster.json()).members.length, 2)
     })
     await suite.test('failure path', async () => {
       for (const row of [
@@ -154,6 +165,9 @@ test('private avatar persistence', { skip: !adminUrl || !runtimeUrl }, async (su
           await admin`update farmies.parties set deleted_at = now() where id = (select party_id from farmies.memberships where id = ${ids[0].toString()})`
         }
         assert.equal((await operation('read', 1)).status, 'not_found', `inactive ${row.table} denies read`)
+        const scene = await findScene(bindings, authIds[1])
+        if (row.actor === 1 || row.table === 'parties') assert.equal(scene, undefined)
+        else assert.deepEqual(scene.members.map(member => member.membershipId), [String(ids[1])])
         if (row.table === 'users') {
           await admin`update farmies.users set deleted_at = null where auth_user_id = ${authIds[row.actor]}`
         } else if (row.table === 'memberships') {

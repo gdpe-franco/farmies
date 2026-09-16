@@ -8,6 +8,7 @@ import { bodyLimit } from 'hono/body-limit'
 
 import { manageAvatar, validateAvatar, type ManageAvatar } from './avatars.ts'
 import { openDatabase } from './db/index.ts'
+import { findScene } from './scene.ts'
 
 import {
   environments,
@@ -98,6 +99,7 @@ type JoinParty = (
 ) => Promise<JoinPartyResult>
 
 type Dependencies = {
+  findScene: typeof findScene
   manageAvatar: ManageAvatar
   createParty: CreateParty
   findCurrentParty: FindCurrentParty
@@ -614,6 +616,7 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
       origin: context.env.CLIENT_ORIGIN,
       allowHeaders: ['Authorization', 'Content-Type'],
       allowMethods: ['GET', 'PUT', 'POST', 'DELETE', 'OPTIONS'],
+      exposeHeaders: ['Date'],
       maxAge: 600,
     })(context, next),
   )
@@ -641,6 +644,18 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
   app.use('/parties/*', authenticate)
   app.use('/invites/*', authenticate)
   app.use('/memberships', authenticate)
+
+  app.get('/parties/current/scene', async (context) => {
+    context.header('Cache-Control', 'private, no-store')
+    context.header('Date', new Date().toUTCString())
+    try {
+      const scene = await (dependencies.findScene ?? findScene)(context.env, context.get('authUserId'))
+      if (!scene) return context.json({ error: 'PARTY_NOT_FOUND' }, 404)
+      return context.json(scene)
+    } catch {
+      return context.json({ error: 'SCENE_LOAD_FAILED' }, 500)
+    }
+  })
 
   app.use('/parties/current/avatars/*', bodyLimit({
     maxSize: 524_288,

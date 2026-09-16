@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 import { validateAvatar } from '../../../api/src/avatars.ts'
 
-const facePhoto = await readFile(new URL('../fixtures/face.jpg', import.meta.url))
+const facePhoto = await readFile(new URL('../fixtures/face.png', import.meta.url))
 
 test.use({ launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] } })
 
@@ -73,9 +73,10 @@ const openAvatarSetup = async (page, locale) => {
       ? route.fulfill({ contentType: 'image/webp', body: storage.bytes })
       : route.fulfill({ status: 404 })
   })
-  await page.route('**/test-face.jpg', (route) => route.fulfill({ contentType: 'image/jpeg', body: facePhoto }))
+  await page.route('**/test-face.jpg', (route) => route.fulfill({ contentType: 'image/png', body: facePhoto }))
   await page.route('**/auth/v1/otp', (route) => route.fulfill({ json: {} }))
   await page.route('**/auth/v1/verify', (route) => route.fulfill({ json: authResponse }))
+  await page.route('**/auth/v1/logout*', (route) => route.fulfill({ json: {} }))
   await page.route('http://localhost:8787/users/me', (route) => route.fulfill({
     json: {
       user: {
@@ -87,6 +88,11 @@ const openAvatarSetup = async (page, locale) => {
     },
   }))
   await page.route('http://localhost:8787/parties/current', (route) => route.fulfill({ json: party }))
+  await page.route('http://localhost:8787/parties/current/scene', (route) => route.fulfill({ json: {
+    party: { id: '84', species: 'COW', environment: { code: 'PASTURE', definition: {
+      version: 1, scene: 'PASTURE', zones: [], props: [], capabilities: [],
+    } } }, members: [{ membershipId: '85', nickname: 'Fern', joinedAt: '2026-09-11T08:00:00.000Z', avatarVersion: storage.uploads || null }],
+  } }))
 
   await page.goto('/')
   if (locale === 'es') {
@@ -123,6 +129,163 @@ const useCameraPhoto = async (page) => {
       window.cameraTestTracks = stream.getTracks()
       return stream
     }
+  })
+}
+
+for (const locale of ['en', 'es']) {
+  test(`pasture happy path: ten cows, private photos, phone resize and sign-out in ${locale}`, async ({ page }) => {
+    const errors = []
+    page.on('pageerror', error => errors.push(error.message))
+    await openAvatarSetup(page, locale)
+    await expect(page.locator('.scene-canvas canvas')).toBeVisible()
+    const alpha = await page.evaluate(async () => {
+      const { decodeCowAtlas, decodeCowHeads } = await import('/src/farm-assets.ts')
+      const bitmap = await decodeCowAtlas(await fetch('/src/assets/farm/cow-atlas.png').then(response => response.blob()))
+      const heads = await decodeCowHeads(bitmap)
+      const bounds = heads.map(head => ({ width: head.width, height: head.height }))
+      for (const [index, head] of heads.entries()) {
+        const maskCanvas = document.createElement('canvas')
+        maskCanvas.width = maskCanvas.height = 256
+        const maskContext = maskCanvas.getContext('2d')
+        maskContext.drawImage(head.bitmap, 0, 0)
+        const mask = maskContext.getImageData(0, 0, 256, 256).data
+        const bodyCanvas = document.createElement('canvas')
+        bodyCanvas.width = bodyCanvas.height = 256
+        const bodyContext = bodyCanvas.getContext('2d')
+        bodyContext.drawImage(bitmap, index % 4 * 256, Math.floor(index / 4) * 256, 256, 256, 0, 0, 256, 256)
+        const body = bodyContext.getImageData(0, 0, 256, 256).data
+        const seen = new Uint8Array(256 * 256)
+        const connected = []
+        let opaque = 0
+        for (let pixel = 0; pixel < seen.length; pixel++) {
+          if (!body[pixel * 4 + 3]) continue
+          opaque++
+          if (!connected.length) { connected.push(pixel); seen[pixel] = 1 }
+          const offset = pixel * 4
+          if (body[offset + 1] > body[offset] + 8 && body[offset + 1] > body[offset + 2] + 8) throw new Error('Green cow marking')
+        }
+        for (let i = 0; i < connected.length; i++) {
+          const pixel = connected[i], x = pixel % 256
+          for (const neighbor of [x ? pixel - 1 : -1, x < 255 ? pixel + 1 : -1, pixel - 256, pixel + 256]) {
+            if (neighbor < 0 || neighbor >= seen.length || seen[neighbor] || !body[neighbor * 4 + 3]) continue
+            seen[neighbor] = 1
+            connected.push(neighbor)
+          }
+        }
+        if (connected.length !== opaque || opaque < 10_000) throw new Error('Stray pixels or damaged cow silhouette')
+        let centerX = 0, centerY = 0, maskCount = 0
+        for (let pixel = 0; pixel < mask.length; pixel += 4) {
+          if (mask[pixel + 3] && !body[pixel + 3]) throw new Error('Detached head mask')
+          if (mask[pixel + 3]) {
+            const position = pixel / 4
+            centerX += position % 256; centerY += Math.floor(position / 256); maskCount++
+          }
+        }
+        if (Math.abs(centerX / maskCount - head.centerX) > 0.01 || Math.abs(centerY / maskCount - head.centerY) > 0.01) throw new Error('Off-center face')
+        for (let y = head.y; y < head.y + head.height; y++) {
+          const row = []
+          for (let x = head.x; x < head.x + head.width; x++) if (mask[(y * 256 + x) * 4 + 3]) row.push(x)
+          if (row.length && row.at(-1) - row[0] + 1 !== row.length) throw new Error('Avatar mask contains line gaps')
+        }
+        head.bitmap.close()
+      }
+      const canvas = document.createElement('canvas')
+      canvas.width = canvas.height = 1024
+      const context = canvas.getContext('2d')
+      context.drawImage(bitmap, 0, 0)
+      bitmap.close()
+      const pixel = (x, y) => context.getImageData(x, y, 1, 1).data[3]
+      return { outside: [pixel(0, 0), pixel(256, 0), pixel(512, 0), pixel(1023, 1023)],
+        faces: [pixel(80, 127), pixel(83, 381), pixel(80, 706), pixel(78, 913)], bounds }
+    })
+    expect(alpha.outside).toEqual([0, 0, 0, 0])
+    expect(alpha.faces).toEqual([255, 255, 255, 255])
+    expect(alpha.bounds).toHaveLength(16)
+    for (const head of alpha.bounds) {
+      expect(head.width).toBeGreaterThan(60)
+      expect(head.height).toBeGreaterThan(60)
+    }
+    await page.evaluate(async () => {
+      const { decodeCowHeads } = await import('/src/farm-assets.ts')
+      const blank = await createImageBitmap(new ImageData(1024, 1024))
+      try {
+        await decodeCowHeads(blank)
+        throw new Error('Invalid head accepted')
+      } catch (error) {
+        if (error.message !== 'COW_HEAD_MASK_INVALID') throw error
+      } finally { blank.close() }
+    })
+    const photo = await page.evaluate(async () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = canvas.height = 512
+      const context = canvas.getContext('2d')
+      context.fillStyle = '#efb0a1'
+      context.fillRect(0, 0, 512, 512)
+      context.fillStyle = '#24332a'
+      context.beginPath()
+      context.arc(160, 200, 24, 0, Math.PI * 2)
+      context.arc(352, 200, 24, 0, Math.PI * 2)
+      context.fill()
+      context.fillRect(210, 330, 92, 16)
+      return canvas.toDataURL('image/webp').split(',')[1]
+    })
+    await page.route('http://localhost:8787/parties/current/avatars/86', route => {
+      expect(route.request().headers().authorization).toBe(`Bearer ${accessToken}`)
+      return route.fulfill({ contentType: 'image/webp', body: Buffer.from(photo, 'base64') })
+    })
+    await page.route('http://localhost:8787/parties/current/scene', route => route.fulfill({ json: {
+      party: { id: '84', species: 'COW', environment: { code: 'PASTURE', definition: {
+        version: 1, scene: 'PASTURE', zones: [], props: [], capabilities: [],
+      } } }, members: Array.from({ length: 10 }, (_, i) => ({ membershipId: String(85 + i), nickname: `Friend ${i + 1}`,
+        joinedAt: '2026-09-11T08:00:00.000Z', avatarVersion: i === 1 ? 1 : null,
+      })),
+    } }))
+    await page.getByRole('button', { name: locale === 'es' ? 'Actualizar prado' : 'Refresh pasture' }).click()
+    const scene = page.locator('section').filter({ has: page.getByRole('heading', { name: locale === 'es' ? 'Nuestro prado' : 'Our pasture' }) })
+    await expect(scene.locator('canvas')).toBeVisible()
+    await expect(scene.locator('.q-item')).toHaveCount(10)
+    await expect(scene.getByText(locale === 'es' ? 'Cara provisional' : 'Placeholder face', { exact: false })).toHaveCount(9)
+    for (const width of [320, 390, 900]) {
+      await page.setViewportSize({ width, height: 800 })
+      await expect.poll(() => scene.locator('canvas').evaluate(canvas => canvas.width / window.devicePixelRatio <= window.innerWidth)).toBe(true)
+    }
+    await scene.screenshot({ path: `test-results/pasture-${locale}.png` })
+    const canvas = scene.locator('canvas')
+    const frame = await canvas.screenshot()
+    await expect.poll(async () => Buffer.compare(frame, await canvas.screenshot())).not.toBe(0)
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await expect(canvas).toBeVisible()
+    await page.getByRole('button', { name: locale === 'es' ? 'Tema' : 'Theme', exact: true }).click()
+    await page.getByRole('menuitemradio', { name: locale === 'es' ? 'Oscuro' : 'Dark', exact: true }).click()
+    await expect(canvas).toBeVisible()
+    await expect(scene.locator('.q-item')).toHaveCount(10)
+    await page.getByRole('button', { name: locale === 'es' ? 'Cerrar sesión' : 'Sign out' }).click()
+    await expect(scene.locator('canvas')).toHaveCount(0)
+    expect(errors).toEqual([])
+  })
+  test(`pasture failure path: private roster failure clears photos and refresh recovers in ${locale}`, async ({ page }) => {
+    await openAvatarSetup(page, locale)
+    await expect(page.locator('.scene-canvas canvas')).toBeVisible()
+    await page.route('http://localhost:8787/parties/current/scene', route => route.fulfill({ status: 404 }))
+    const refresh = page.getByRole('button', { name: locale === 'es' ? 'Actualizar prado' : 'Refresh pasture' })
+    await refresh.click()
+    await expect(page.getByRole('alert')).toContainText(locale === 'es' ? 'No pudimos cargar tu prado' : 'We could not load your pasture')
+    await expect(page.locator('.scene-canvas canvas')).toHaveCount(0)
+    await page.unroute('http://localhost:8787/parties/current/scene')
+    await page.route('http://localhost:8787/parties/current/scene', route => route.fulfill({ json: {
+      party: { id: '84', species: 'COW', environment: { code: 'PASTURE', definition: {
+        version: 1, scene: 'PASTURE', zones: [], props: [], capabilities: [],
+      } } }, members: [{ membershipId: '85', nickname: 'Fern', joinedAt: '2026-09-11T08:00:00.000Z', avatarVersion: 1 }],
+    } }))
+    await page.route('http://localhost:8787/parties/current/avatars/85', route => route.fulfill({ status: 500 }))
+    await refresh.click()
+    await expect(page.locator('.scene-canvas canvas')).toBeVisible()
+    await expect(page.getByText(locale === 'es' ? 'No pudimos cargar algunas fotos.' : 'Some photos could not load.', { exact: false })).toBeVisible()
+    await page.route('**/cow-atlas.png*', route => route.fulfill({ status: 500 }))
+    await refresh.click()
+    await expect(page.getByRole('alert')).toContainText(locale === 'es' ? 'No pudimos cargar tu prado' : 'We could not load your pasture')
+    await expect(page.locator('.scene-canvas canvas')).toHaveCount(0)
+    await expect(page.getByRole('list', { name: locale === 'es' ? 'Miembros del prado' : 'Pasture members' }).locator('.q-item')).toHaveCount(1)
   })
 }
 

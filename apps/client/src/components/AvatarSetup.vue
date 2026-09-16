@@ -290,6 +290,7 @@ import { avatarCameraSource, avatarFileSource } from '../platform/avatar-source'
 import { deleteAvatar, loadAvatar, saveAvatar } from '../avatar-api'
 import { useSessionStore } from '../stores/session'
 
+const emit = defineEmits<{ changed: [] }>()
 const { t } = useI18n()
 const session = useSessionStore()
 const membershipId = session.party!.membership.id
@@ -373,6 +374,7 @@ const persistAvatar = async () => {
     const blob = preparedBlob.value
     await saveAvatar(session.request, membershipId, blob)
     if (disposed) return
+    emit('changed')
     clearSaved()
     savedUrl.value = URL.createObjectURL(blob)
     clearPrepared()
@@ -394,6 +396,7 @@ const removeAvatar = async () => {
   try {
     await deleteAvatar(session.request, membershipId)
     if (disposed) return
+    emit('changed')
     clearSaved()
     clearPrepared()
     sourceImage.value?.close()
@@ -404,7 +407,7 @@ const removeAvatar = async () => {
     if (!disposed) {
       deleteRetry.value = true
       const pending = error instanceof Error && error.message === 'AVATAR_DELETE_RETRY'
-      if (pending) clearSaved()
+      if (pending) { clearSaved(); emit('changed') }
       errorKey.value = pending ? 'avatar.deleteRetryError' : 'avatar.deleteError'
     }
   } finally {

@@ -4,6 +4,7 @@ import test from 'node:test'
 import { validateAvatar } from '../src/avatars.ts'
 import { createApp } from '../src/index.ts'
 import { webp } from './fixtures/webp.mjs'
+import { environmentDefinitionSchema } from '../src/scene.ts'
 
 test('processed avatar validation', async (suite) => {
   await suite.test('happy path', () => assert.equal(validateAvatar(webp()), true))
@@ -48,6 +49,25 @@ test('private avatar HTTP routes', async (suite) => {
     if (result instanceof Error) throw result
     return result
   } })
+  await suite.test('scene happy path and unavailable membership failure path', async () => {
+    let scene = { party: { id: '84', species: 'COW', environment: { code: 'PASTURE', definition: {
+      version: 1, scene: 'PASTURE', zones: [], props: [], capabilities: [],
+    } } }, members: [{ membershipId: '85', nickname: 'Fern', joinedAt: '2026-09-11T08:00:00.000Z', avatarVersion: null }] }
+    const sceneApp = createApp({ findScene: async (_env, id) => { assert.equal(id, authId); return scene } })
+    const get = (headers = { Authorization: authorization }) => sceneApp.request('/parties/current/scene', { headers }, bindings)
+    const response = await get()
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('Cache-Control'), 'private, no-store')
+    assert.deepEqual(await response.json(), scene)
+    assert.equal((await get({})).status, 401)
+    scene = undefined
+    assert.equal((await get()).status, 404)
+    const failingApp = createApp({ findScene: async () => { throw new Error('Database unavailable') } })
+    const failure = await failingApp.request('/parties/current/scene', { headers: { Authorization: authorization } }, bindings)
+    assert.equal(failure.status, 500)
+    assert.deepEqual(await failure.json(), { error: 'SCENE_LOAD_FAILED' })
+    assert.equal(environmentDefinitionSchema.safeParse({ version: 2, scene: 'PASTURE', zones: [], props: [], capabilities: [] }).success, false)
+  })
   const request = (method, id = '85', body, headers = {}) => app.request(`/parties/current/avatars/${id}`, {
     method, body, headers: { Authorization: authorization, 'Content-Type': 'image/webp', ...headers },
   }, bindings)
