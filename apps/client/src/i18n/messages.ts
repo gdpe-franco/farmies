@@ -294,7 +294,7 @@ export const messages = {
     },
     avatar: {
       saving: 'Cargando o guardando tu avatar…',
-      saved: 'Tu avatar está guardado. Solo tu Party puede verlo.',
+      saved: 'Tu avatar está guardado. Solo tu grupo puede verlo.',
       savedPreview: 'Avatar de vaca guardado',
       empty: 'Aún no hay un avatar guardado.',
       deleteConfirm: '¿Eliminar tu avatar guardado? Puedes agregar otra foto después.',

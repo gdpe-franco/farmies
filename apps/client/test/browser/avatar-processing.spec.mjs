@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 import { validateAvatar } from '../../../api/src/avatars.ts'
 
-const facePhoto = await readFile(new URL('../fixtures/face.png', import.meta.url))
+const facePhoto = await readFile(new URL('../fixtures/synthetic-face.webp', import.meta.url))
 
 test.use({ launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] } })
 
@@ -73,7 +73,7 @@ const openAvatarSetup = async (page, locale) => {
       ? route.fulfill({ contentType: 'image/webp', body: storage.bytes })
       : route.fulfill({ status: 404 })
   })
-  await page.route('**/test-face.jpg', (route) => route.fulfill({ contentType: 'image/png', body: facePhoto }))
+  await page.route('**/test-face.webp', (route) => route.fulfill({ contentType: 'image/webp', body: facePhoto }))
   await page.route('**/auth/v1/otp', (route) => route.fulfill({ json: {} }))
   await page.route('**/auth/v1/verify', (route) => route.fulfill({ json: authResponse }))
   await page.route('**/auth/v1/logout*', (route) => route.fulfill({ json: {} }))
@@ -88,6 +88,7 @@ const openAvatarSetup = async (page, locale) => {
     },
   }))
   await page.route('http://localhost:8787/parties/current', (route) => route.fulfill({ json: party }))
+  await page.route('http://localhost:8787/parties/current/transfer-candidates', (route) => route.fulfill({ json: { members: [] } }))
   await page.route('http://localhost:8787/parties/current/scene', (route) => route.fulfill({ json: {
     party: { id: '84', species: 'COW', environment: { code: 'PASTURE', definition: {
       version: 1, scene: 'PASTURE', zones: [], props: [], capabilities: [],
@@ -115,7 +116,7 @@ const useCameraPhoto = async (page) => {
     navigator.mediaDevices.getUserMedia = async (constraints) => {
       const device = await open(constraints)
       device.getTracks().forEach((track) => track.stop())
-      const photo = await createImageBitmap(await fetch('/test-face.jpg').then((response) => response.blob()))
+      const photo = await createImageBitmap(await fetch('/test-face.webp').then((response) => response.blob()))
       const canvas = document.createElement('canvas')
       canvas.width = photo.width
       canvas.height = photo.height
@@ -315,7 +316,7 @@ test('happy path automatically prepares camera and gallery faces in English', as
   const preparedAvatar = page.getByRole('img', { name: 'Prepared cow avatar' })
   for (const source of ['camera', 'gallery']) {
     if (source === 'gallery') {
-      await page.locator('input[type="file"]').setInputFiles({ name: 'face.jpg', mimeType: 'image/jpeg', buffer: facePhoto })
+      await page.locator('input[type="file"]').setInputFiles({ name: 'face.webp', mimeType: 'image/webp', buffer: facePhoto })
     }
     await expect(page.getByText(/Your 512 × 512 WebP is ready/)).toBeVisible({ timeout: 20_000 })
     await expect(preparedAvatar).toBeVisible()
@@ -399,16 +400,16 @@ test('failure path handles camera failures and invalid files in Spanish', async 
   await expect(page.getByRole('alert')).toContainText('No se detectó un rostro claro.', { timeout: 20_000 })
   await expect.poll(() => page.evaluate(() => window.cameraTestTracks.every((track) => track.readyState === 'ended'))).toBe(true)
   const photos = await page.evaluate(async () => {
-    const photo = await createImageBitmap(await fetch('/test-face.jpg').then((response) => response.blob()))
+    const photo = await createImageBitmap(await fetch('/test-face.webp').then((response) => response.blob()))
     const canvas = document.createElement('canvas')
-    canvas.width = 640
-    canvas.height = 400
+    canvas.width = 1_024
+    canvas.height = 512
     const context = canvas.getContext('2d')
     context.fillStyle = '#fff'
     context.fillRect(0, 0, canvas.width, canvas.height)
     const noFace = canvas.toDataURL('image/png').split(',')[1]
-    context.drawImage(photo, 245, 20, 320, 400, 0, 0, 320, 400)
-    context.drawImage(photo, 245, 20, 320, 400, 320, 0, 320, 400)
+    context.drawImage(photo, 0, 0, 512, 512)
+    context.drawImage(photo, 512, 0, 512, 512)
     photo.close()
     return { noFace, multipleFaces: canvas.toDataURL('image/png').split(',')[1] }
   })
@@ -450,11 +451,11 @@ test('failure path handles camera failures and invalid files in Spanish', async 
   await page.route('**/*.tflite', (route) => route.abort())
   await page.reload()
   await expect(page.getByRole('heading', { name: 'Avatar de vaca' })).toBeVisible()
-  await page.locator('input[type="file"]').setInputFiles({ name: 'face.jpg', mimeType: 'image/jpeg', buffer: facePhoto })
+  await page.locator('input[type="file"]').setInputFiles({ name: 'face.webp', mimeType: 'image/webp', buffer: facePhoto })
   await expect(page.getByRole('alert')).toContainText('No se pudo cargar o ejecutar la detección de rostros.')
   await expect(page.getByRole('img', { name: 'Avatar de vaca preparado' })).toHaveCount(0)
   await page.unroute('**/*.tflite')
-  await page.locator('input[type="file"]').setInputFiles({ name: 'face.jpg', mimeType: 'image/jpeg', buffer: facePhoto })
+  await page.locator('input[type="file"]').setInputFiles({ name: 'face.webp', mimeType: 'image/webp', buffer: facePhoto })
   await expect(page.getByRole('img', { name: 'Avatar de vaca preparado' })).toBeVisible()
   const originalPreview = await page.getByRole('img', { name: 'Avatar de vaca preparado' }).getAttribute('src')
   await page.getByRole('button', { name: 'Ajustar recorte' }).click()

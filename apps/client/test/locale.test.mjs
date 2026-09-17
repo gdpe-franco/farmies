@@ -180,6 +180,8 @@ test('translation messages', async (suite) => {
   await suite.test('happy path', () => {
     assert.deepEqual(Object.keys(messages), [...locales])
     for (const locale of locales) assert.deepEqual(flattenKeys(messages[locale]), flattenKeys(messages.en))
+    assert.doesNotMatch(JSON.stringify(messages.en), /\bgroup\b/i)
+    assert.doesNotMatch(JSON.stringify(messages.es), /\bPart(?:y|ies)\b/)
 
     const values = { name: 'Los Compas', nickname: 'Niña 🐮' }
     for (const locale of locales) {

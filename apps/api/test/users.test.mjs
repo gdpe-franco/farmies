@@ -337,6 +337,13 @@ test('authorized API endpoints', async (suite) => {
       body: null,
     },
     {
+      name: 'rejects a client-supplied identity',
+      authorization: `Bearer ${validToken}`,
+      requestBody: { displayName: 'Green Friends', nickname: 'Fern', userId: '99' },
+      status: 400,
+      body: { error: 'INVALID_REQUEST' },
+    },
+    {
       name: 'rejects an empty Party name',
       authorization: `Bearer ${validToken}`,
       requestBody: { displayName: '   ', nickname: 'Fern' },
@@ -643,6 +650,7 @@ test('authorized API endpoints', async (suite) => {
 
   const membershipFailureCases = [
     { name: 'requires authentication', authorization: undefined, body: { inviteToken: 'a'.repeat(43), nickname: 'Fern' }, result: { status: 'joined' }, status: 401, error: null },
+    { name: 'rejects a client-supplied identity', authorization: `Bearer ${validToken}`, body: { inviteToken: 'a'.repeat(43), nickname: 'Fern', userId: '99' }, result: { status: 'joined' }, status: 400, error: 'INVALID_REQUEST' },
     { name: 'rejects a malformed invite token', authorization: `Bearer ${validToken}`, body: { inviteToken: 'invalid', nickname: 'Fern' }, result: { status: 'joined' }, status: 400, error: 'INVALID_REQUEST' },
     { name: 'rejects an empty nickname', authorization: `Bearer ${validToken}`, body: { inviteToken: 'a'.repeat(43), nickname: '   ' }, result: { status: 'joined' }, status: 400, error: 'INVALID_REQUEST' },
     { name: 'hides invalid, expired, revoked, or full invites', authorization: `Bearer ${validToken}`, body: { inviteToken: 'a'.repeat(43), nickname: 'Fern' }, result: { status: 'invite_not_available' }, status: 404, error: 'INVITE_NOT_AVAILABLE' },
@@ -710,6 +718,7 @@ test('authorized API endpoints', async (suite) => {
 
     for (const testCase of [
       { name: 'transfers to an active member', body: { successorMembershipId: '86' }, result: { status: 'transferred' }, status: 204, error: null },
+      { name: 'rejects a client-supplied identity', body: { successorMembershipId: '86', userId: '99' }, result: { status: 'transferred' }, status: 400, error: 'INVALID_REQUEST' },
       { name: 'rejects malformed membership IDs', body: { successorMembershipId: '0' }, result: { status: 'transferred' }, status: 400, error: 'INVALID_REQUEST' },
       { name: 'requires the current owner', body: { successorMembershipId: '86' }, result: { status: 'owner_required' }, status: 403, error: 'PARTY_OWNER_REQUIRED' },
       { name: 'rejects a stale or cross-Party successor', body: { successorMembershipId: '86' }, result: { status: 'successor_not_available' }, status: 404, error: 'PARTY_SUCCESSOR_NOT_AVAILABLE' },
@@ -789,6 +798,39 @@ test('authorized API endpoints', async (suite) => {
     }, bindings)
     assert.equal(reusedSession.status, 401)
   })
+})
+
+test('every protected route requires verified identity', async () => {
+  const app = createApp()
+  const bindings = {
+    CLIENT_ORIGIN: 'https://farmies.test',
+    SUPABASE_JWKS_URL: 'https://jwks.internal/auth/v1/.well-known/jwks.json',
+    SUPABASE_URL: 'https://example.supabase.co',
+  }
+  const routes = [
+    ['PUT', '/users/me'],
+    ['PATCH', '/users/me'],
+    ['DELETE', '/users/me'],
+    ['POST', '/parties'],
+    ['GET', '/parties/current'],
+    ['DELETE', '/parties/current'],
+    ['GET', '/parties/current/scene'],
+    ['POST', '/parties/current/invite'],
+    ['DELETE', '/parties/current/invite'],
+    ['DELETE', '/parties/current/membership'],
+    ['GET', '/parties/current/transfer-candidates'],
+    ['PATCH', '/parties/current/owner'],
+    ['GET', `/invites/${'a'.repeat(43)}`],
+    ['POST', '/memberships'],
+    ['GET', '/parties/current/avatars/85'],
+    ['PUT', '/parties/current/avatars/85'],
+    ['DELETE', '/parties/current/avatars/85'],
+  ]
+
+  for (const [method, path] of routes) {
+    const response = await app.request(path, { method }, bindings)
+    assert.equal(response.status, 401, `${method} ${path}`)
+  }
 })
 
 test('invite secrets', async (suite) => {
