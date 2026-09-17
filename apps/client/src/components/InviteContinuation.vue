@@ -112,6 +112,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
+import { AppErrorCode } from '../error-codes.ts'
 import { nicknameSchema, useSessionStore } from '../stores/session'
 import EmailCodeForm from './EmailCodeForm.vue'
 
@@ -142,7 +143,7 @@ watch(() => session.user, async (user) => {
   try {
     await session.loadInvitePreview()
   } catch (error) {
-    errorKey.value = error instanceof Error && error.message === 'INVITE_NOT_AVAILABLE'
+    errorKey.value = error instanceof Error && error.message === AppErrorCode.INVITE_NOT_AVAILABLE
       ? 'invite.unavailable'
       : 'invite.loadError'
   } finally {
@@ -159,9 +160,9 @@ const joinParty = async () => {
     await session.joinParty(nickname.value)
     await router.replace('/')
   } catch (error) {
-    joinError.value = error instanceof Error && error.message === 'INVITE_NOT_AVAILABLE'
+    joinError.value = error instanceof Error && error.message === AppErrorCode.INVITE_NOT_AVAILABLE
       ? 'invite.unavailable'
-      : error instanceof Error && error.message === 'ALREADY_IN_PARTY'
+      : error instanceof Error && error.message === AppErrorCode.ALREADY_IN_PARTY
         ? 'party.alreadyMember'
         : 'party.joinError'
   } finally {

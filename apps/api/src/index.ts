@@ -8,6 +8,8 @@ import { bodyLimit } from 'hono/body-limit'
 
 import { manageAvatar, validateAvatar, type ManageAvatar } from './avatars.ts'
 import { openDatabase } from './db/index.ts'
+import { ApiErrorCode } from './error-codes.ts'
+import { leaveParty, type LeaveParty } from './memberships.ts'
 import { findScene } from './scene.ts'
 
 import {
@@ -106,6 +108,7 @@ type Dependencies = {
   findOrCreateUser: FindOrCreateUser
   findInvitePreview: FindInvitePreview
   joinParty: JoinParty
+  leaveParty: LeaveParty
   manageInvite: ManageInvite
   updateUserLocale: UpdateUserLocale
 }
@@ -555,6 +558,7 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
   const getCurrentParty = dependencies.findCurrentParty ?? findCurrentParty
   const getUser = dependencies.findOrCreateUser ?? findOrCreateUser
   const joinCurrentParty = dependencies.joinParty ?? joinParty
+  const leaveCurrentParty = dependencies.leaveParty ?? leaveParty
   const updateInvite = dependencies.manageInvite ?? manageInvite
   const setUserLocale = dependencies.updateUserLocale ?? updateUserLocale
   const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -650,30 +654,30 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     context.header('Date', new Date().toUTCString())
     try {
       const scene = await (dependencies.findScene ?? findScene)(context.env, context.get('authUserId'))
-      if (!scene) return context.json({ error: 'PARTY_NOT_FOUND' }, 404)
+      if (!scene) return context.json({ error: ApiErrorCode.PARTY_NOT_FOUND }, 404)
       return context.json(scene)
     } catch {
-      return context.json({ error: 'SCENE_LOAD_FAILED' }, 500)
+      return context.json({ error: ApiErrorCode.SCENE_LOAD_FAILED }, 500)
     }
   })
 
   app.use('/parties/current/avatars/*', bodyLimit({
     maxSize: 524_288,
-    onError: (context) => context.json({ error: 'AVATAR_TOO_LARGE' }, 413),
+    onError: (context) => context.json({ error: ApiErrorCode.AVATAR_TOO_LARGE }, 413),
   }))
 
   app.on(['GET', 'PUT', 'DELETE'], '/parties/current/avatars/:membershipId', async (context) => {
     const membershipId = context.req.param('membershipId')!
     if (!/^[1-9]\d{0,18}$/.test(membershipId) || BigInt(membershipId) > 9_223_372_036_854_775_807n) {
-      return context.json({ error: 'INVALID_REQUEST' }, 400)
+      return context.json({ error: ApiErrorCode.INVALID_REQUEST }, 400)
     }
     let bytes: ArrayBuffer | undefined
     if (context.req.method === 'PUT') {
       if (context.req.header('Content-Type') !== 'image/webp') {
-        return context.json({ error: 'AVATAR_MEDIA_TYPE' }, 415)
+        return context.json({ error: ApiErrorCode.AVATAR_MEDIA_TYPE }, 415)
       }
       bytes = await context.req.arrayBuffer()
-      if (!validateAvatar(bytes)) return context.json({ error: 'INVALID_AVATAR' }, 400)
+      if (!validateAvatar(bytes)) return context.json({ error: ApiErrorCode.INVALID_AVATAR }, 400)
     }
     context.header('Cache-Control', 'private, no-store')
     try {
@@ -682,9 +686,9 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
         action: context.req.method === 'PUT' ? 'save' : context.req.method === 'DELETE' ? 'delete' : 'read',
         bytes,
       })
-      if (result.status === 'not_found') return context.json({ error: 'AVATAR_NOT_FOUND' }, 404)
-      if (result.status === 'forbidden') return context.json({ error: 'AVATAR_OWNER_REQUIRED' }, 403)
-      if (result.status === 'cleanup_pending') return context.json({ error: 'AVATAR_DELETE_RETRY' }, 503)
+      if (result.status === 'not_found') return context.json({ error: ApiErrorCode.AVATAR_NOT_FOUND }, 404)
+      if (result.status === 'forbidden') return context.json({ error: ApiErrorCode.AVATAR_OWNER_REQUIRED }, 403)
+      if (result.status === 'cleanup_pending') return context.json({ error: ApiErrorCode.AVATAR_DELETE_RETRY }, 503)
       if (result.status === 'deleted') return context.body(null, 204)
       if (result.status === 'saved') return context.json({ version: result.version })
       if (result.status !== 'read') throw new Error('Unexpected avatar result')
@@ -692,7 +696,7 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
       context.header('X-Content-Type-Options', 'nosniff')
       return context.body(result.bytes)
     } catch {
-      return context.json({ error: 'AVATAR_OPERATION_FAILED' }, 500)
+      return context.json({ error: ApiErrorCode.AVATAR_OPERATION_FAILED }, 500)
     }
   })
 
@@ -706,7 +710,7 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
   app.patch('/users/me', async (context) => {
     const body = await context.req.json().catch(() => undefined)
     const result = localeRequestSchema.safeParse(body)
-    if (!result.success) return context.json({ error: 'INVALID_REQUEST' }, 400)
+    if (!result.success) return context.json({ error: ApiErrorCode.INVALID_REQUEST }, 400)
 
     const user = await setUserLocale(
       context.env,
@@ -721,28 +725,28 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
   app.post('/parties', async (context) => {
     const body = await context.req.json().catch(() => undefined)
     const input = partyRequestSchema.safeParse(body)
-    if (!input.success) return context.json({ error: 'INVALID_REQUEST' }, 400)
+    if (!input.success) return context.json({ error: ApiErrorCode.INVALID_REQUEST }, 400)
 
     try {
       const result = await addParty(context.env, context.get('authUserId'), input.data)
       if (result.status === 'user_not_found') return unauthorized()
       if (result.status === 'already_member') {
-        return context.json({ error: 'ALREADY_IN_PARTY' }, 409)
+        return context.json({ error: ApiErrorCode.ALREADY_IN_PARTY }, 409)
       }
 
       return context.json(serializeParty(result.value), 201)
     } catch {
-      return context.json({ error: 'PARTY_CREATION_FAILED' }, 500)
+      return context.json({ error: ApiErrorCode.PARTY_CREATION_FAILED }, 500)
     }
   })
 
   app.get('/parties/current', async (context) => {
     try {
       const party = await getCurrentParty(context.env, context.get('authUserId'))
-      if (!party) return context.json({ error: 'PARTY_NOT_FOUND' }, 404)
+      if (!party) return context.json({ error: ApiErrorCode.PARTY_NOT_FOUND }, 404)
       return context.json(serializeParty(party))
     } catch {
-      return context.json({ error: 'PARTY_LOAD_FAILED' }, 500)
+      return context.json({ error: ApiErrorCode.PARTY_LOAD_FAILED }, 500)
     }
   })
 
@@ -750,14 +754,14 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     try {
       const result = await updateInvite(context.env, context.get('authUserId'), 'replace')
       if (result.status === 'owner_required') {
-        return context.json({ error: 'PARTY_OWNER_REQUIRED' }, 403)
+        return context.json({ error: ApiErrorCode.PARTY_OWNER_REQUIRED }, 403)
       }
       if (result.status !== 'created') throw new Error('Unexpected invite result')
 
       const inviteUrl = new URL(`/invite/${result.token}`, context.env.CLIENT_ORIGIN).toString()
       return context.json({ inviteUrl, expiresAt: result.expiresAt.toISOString() }, 201)
     } catch {
-      return context.json({ error: 'INVITE_UPDATE_FAILED' }, 500)
+      return context.json({ error: ApiErrorCode.INVITE_UPDATE_FAILED }, 500)
     }
   })
 
@@ -765,34 +769,49 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     try {
       const result = await updateInvite(context.env, context.get('authUserId'), 'revoke')
       if (result.status === 'owner_required') {
-        return context.json({ error: 'PARTY_OWNER_REQUIRED' }, 403)
+        return context.json({ error: ApiErrorCode.PARTY_OWNER_REQUIRED }, 403)
       }
       if (result.status !== 'revoked') throw new Error('Unexpected invite result')
       return context.body(null, 204)
     } catch {
-      return context.json({ error: 'INVITE_UPDATE_FAILED' }, 500)
+      return context.json({ error: ApiErrorCode.INVITE_UPDATE_FAILED }, 500)
+    }
+  })
+
+  app.delete('/parties/current/membership', async (context) => {
+    try {
+      const result = await leaveCurrentParty(context.env, context.get('authUserId'))
+      if (result.status === 'owner_required') {
+        return context.json({ error: ApiErrorCode.PARTY_OWNER_REQUIRED }, 403)
+      }
+      if (result.status === 'cleanup_pending') {
+        return context.json({ error: ApiErrorCode.MEMBERSHIP_DELETE_RETRY }, 503)
+      }
+      return context.body(null, 204)
+    } catch {
+      return context.json({ error: ApiErrorCode.MEMBERSHIP_DELETE_FAILED }, 500)
     }
   })
 
   app.get('/invites/:token', async (context) => {
     const token = context.req.param('token')
     if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
-      return context.json({ error: 'INVITE_NOT_AVAILABLE' }, 404)
+      return context.json({ error: ApiErrorCode.INVITE_NOT_AVAILABLE }, 404)
     }
 
     try {
       const preview = await getInvitePreview(context.env, await hashInviteToken(token))
-      if (!preview) return context.json({ error: 'INVITE_NOT_AVAILABLE' }, 404)
+      if (!preview) return context.json({ error: ApiErrorCode.INVITE_NOT_AVAILABLE }, 404)
       return context.json({ party: { ...preview, capacity: 10 } })
     } catch {
-      return context.json({ error: 'INVITE_LOAD_FAILED' }, 500)
+      return context.json({ error: ApiErrorCode.INVITE_LOAD_FAILED }, 500)
     }
   })
 
   app.post('/memberships', async (context) => {
     const body = await context.req.json().catch(() => undefined)
     const input = membershipRequestSchema.safeParse(body)
-    if (!input.success) return context.json({ error: 'INVALID_REQUEST' }, 400)
+    if (!input.success) return context.json({ error: ApiErrorCode.INVALID_REQUEST }, 400)
 
     try {
       const result = await joinCurrentParty(context.env, context.get('authUserId'), {
@@ -801,15 +820,15 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
       })
       if (result.status === 'user_not_found') return unauthorized()
       if (result.status === 'invite_not_available') {
-        return context.json({ error: 'INVITE_NOT_AVAILABLE' }, 404)
+        return context.json({ error: ApiErrorCode.INVITE_NOT_AVAILABLE }, 404)
       }
       if (result.status === 'already_member') {
-        return context.json({ error: 'ALREADY_IN_PARTY' }, 409)
+        return context.json({ error: ApiErrorCode.ALREADY_IN_PARTY }, 409)
       }
 
       return context.json(serializeParty(result.value), result.status === 'joined' ? 201 : 200)
     } catch {
-      return context.json({ error: 'PARTY_JOIN_FAILED' }, 500)
+      return context.json({ error: ApiErrorCode.PARTY_JOIN_FAILED }, 500)
     }
   })
 

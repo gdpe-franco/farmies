@@ -288,6 +288,7 @@ import {
 } from '../avatar-processing'
 import { avatarCameraSource, avatarFileSource } from '../platform/avatar-source'
 import { deleteAvatar, loadAvatar, saveAvatar } from '../avatar-api'
+import { AppErrorCode } from '../error-codes.ts'
 import { useSessionStore } from '../stores/session'
 
 const emit = defineEmits<{ changed: [] }>()
@@ -406,7 +407,7 @@ const removeAvatar = async () => {
   } catch (error) {
     if (!disposed) {
       deleteRetry.value = true
-      const pending = error instanceof Error && error.message === 'AVATAR_DELETE_RETRY'
+      const pending = error instanceof Error && error.message === AppErrorCode.AVATAR_DELETE_RETRY
       if (pending) { clearSaved(); emit('changed') }
       errorKey.value = pending ? 'avatar.deleteRetryError' : 'avatar.deleteError'
     }

@@ -68,6 +68,20 @@ export const manageAvatar: ManageAvatar = async (bindings, authUserId, input) =>
       const requester = alias(memberships, 'requester')
       const targetUser = alias(users, 'target_user')
       const party = alias(parties, 'avatar_party')
+      const [candidate] = await transaction
+        .select({ partyId: party.id })
+        .from(memberships)
+        .innerJoin(party, and(eq(party.id, memberships.partyId), isNull(party.deletedAt)))
+        .innerJoin(requester, and(eq(requester.partyId, party.id), isNull(requester.deletedAt)))
+        .innerJoin(users, and(eq(users.id, requester.userId), eq(users.authUserId, authUserId), isNull(users.deletedAt)))
+        .where(and(eq(memberships.id, input.membershipId), isNull(memberships.deletedAt)))
+        .limit(1)
+      if (!candidate) return { status: 'not_found' }
+      await transaction.execute(sql`
+        select id from ${parties}
+        where id = ${candidate.partyId} and deleted_at is null
+        for update
+      `)
       const [target] = await transaction
         .select({ id: memberships.id, userId: memberships.userId, requesterId: requester.id })
         .from(memberships)
@@ -76,8 +90,6 @@ export const manageAvatar: ManageAvatar = async (bindings, authUserId, input) =>
         .innerJoin(requester, and(eq(requester.partyId, party.id), isNull(requester.deletedAt)))
         .innerJoin(users, and(eq(users.id, requester.userId), eq(users.authUserId, authUserId), isNull(users.deletedAt)))
         .where(and(eq(memberships.id, input.membershipId), isNull(memberships.deletedAt)))
-        // Serialize object I/O with replacement/deletion and future Party lifecycle operations.
-        .for('update', { of: party })
       if (!target) return { status: 'not_found' }
       if (input.action !== 'read' && target.id !== target.requesterId) return { status: 'forbidden' }
 

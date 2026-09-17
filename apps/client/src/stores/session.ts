@@ -3,18 +3,20 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { z } from 'zod'
 
+import { AppErrorCode } from '../error-codes.ts'
 import type { Locale } from '../i18n/messages'
 
 type AuthClient = Pick<
   SupabaseClient['auth'],
   'getSession' | 'onAuthStateChange' | 'signInWithOtp' | 'signOut' | 'verifyOtp'
 >
-type SessionError = 'SESSION_RESTORE_FAILED' | 'USER_LOAD_FAILED'
-type InvitePreviewError = 'INVITE_NOT_AVAILABLE' | 'INVITE_LOAD_FAILED'
+type SessionError = typeof AppErrorCode.SESSION_RESTORE_FAILED | typeof AppErrorCode.USER_LOAD_FAILED
+type InvitePreviewError = typeof AppErrorCode.INVITE_NOT_AVAILABLE | typeof AppErrorCode.INVITE_LOAD_FAILED
 type SessionStorage = Pick<Storage, 'getItem' | 'removeItem' | 'setItem'>
 
-export type PartyCreationError = 'ALREADY_IN_PARTY' | 'PARTY_CREATION_FAILED'
-export type PartyJoinError = 'ALREADY_IN_PARTY' | 'INVITE_NOT_AVAILABLE' | 'PARTY_JOIN_FAILED'
+export type PartyCreationError = typeof AppErrorCode.ALREADY_IN_PARTY | typeof AppErrorCode.PARTY_CREATION_FAILED
+export type PartyJoinError = typeof AppErrorCode.ALREADY_IN_PARTY | typeof AppErrorCode.INVITE_NOT_AVAILABLE | typeof AppErrorCode.PARTY_JOIN_FAILED
+export type PartyLeaveError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_LEAVE_CLEANUP_PENDING | typeof AppErrorCode.PARTY_LEAVE_FAILED
 
 export const emailSchema = z.string().trim().toLowerCase().pipe(z.email())
 export const emailCodeSchema = z.string().regex(/^\d{6}$/)
@@ -122,7 +124,7 @@ export const useSessionStore = defineStore('session', () => {
     } catch {
       if (accessToken.value === token) {
         user.value = null
-        error.value = 'USER_LOAD_FAILED'
+        error.value = AppErrorCode.USER_LOAD_FAILED
       }
     }
   }
@@ -150,7 +152,7 @@ export const useSessionStore = defineStore('session', () => {
     const { data, error: sessionError } = await auth.getSession()
     if (sessionError) {
       initialized.value = true
-      error.value = 'SESSION_RESTORE_FAILED'
+      error.value = AppErrorCode.SESSION_RESTORE_FAILED
       return
     }
 
@@ -221,8 +223,8 @@ export const useSessionStore = defineStore('session', () => {
 
     if (!response.ok) {
       const code: PartyCreationError = response.status === 409
-        ? 'ALREADY_IN_PARTY'
-        : 'PARTY_CREATION_FAILED'
+        ? AppErrorCode.ALREADY_IN_PARTY
+        : AppErrorCode.PARTY_CREATION_FAILED
       throw new Error(code)
     }
 
@@ -235,22 +237,38 @@ export const useSessionStore = defineStore('session', () => {
       party.value = null
       return
     }
-    if (!response.ok) throw new Error('PARTY_LOAD_FAILED')
+    if (!response.ok) throw new Error(AppErrorCode.PARTY_LOAD_FAILED)
     party.value = partyResponseSchema.parse(await response.json())
   }
 
   const replaceInvite = async () => {
     const response = await request('/parties/current/invite', { method: 'POST' })
-    if (!response.ok) throw new Error('INVITE_UPDATE_FAILED')
+    if (!response.ok) throw new Error(AppErrorCode.INVITE_UPDATE_FAILED)
     invite.value = inviteResponseSchema.parse(await response.json())
     if (party.value) party.value.inviteActive = true
   }
 
   const revokeInvite = async () => {
     const response = await request('/parties/current/invite', { method: 'DELETE' })
-    if (!response.ok) throw new Error('INVITE_UPDATE_FAILED')
+    if (!response.ok) throw new Error(AppErrorCode.INVITE_UPDATE_FAILED)
     invite.value = null
     if (party.value) party.value.inviteActive = false
+  }
+
+  const leaveParty = async () => {
+    const response = await request('/parties/current/membership', { method: 'DELETE' })
+    if (response.ok || response.status === 503) {
+      party.value = null
+      invite.value = null
+    }
+    if (!response.ok) {
+      const code: PartyLeaveError = response.status === 403
+        ? AppErrorCode.PARTY_OWNER_REQUIRED
+        : response.status === 503
+          ? AppErrorCode.PARTY_LEAVE_CLEANUP_PENDING
+          : AppErrorCode.PARTY_LEAVE_FAILED
+      throw new Error(code)
+    }
   }
 
   const retainInvite = (value: string) => {
@@ -267,19 +285,19 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   const loadInvitePreview = async () => {
-    if (!pendingInviteToken.value) throw new Error('INVITE_NOT_AVAILABLE')
+    if (!pendingInviteToken.value) throw new Error(AppErrorCode.INVITE_NOT_AVAILABLE)
     const response = await request(`/invites/${pendingInviteToken.value}`)
     if (!response.ok) {
       const code: InvitePreviewError = response.status === 404
-        ? 'INVITE_NOT_AVAILABLE'
-        : 'INVITE_LOAD_FAILED'
+        ? AppErrorCode.INVITE_NOT_AVAILABLE
+        : AppErrorCode.INVITE_LOAD_FAILED
       throw new Error(code)
     }
     invitePreview.value = invitePreviewResponseSchema.parse(await response.json()).party
   }
 
   const joinParty = async (nicknameValue: string) => {
-    if (!pendingInviteToken.value) throw new Error('INVITE_NOT_AVAILABLE')
+    if (!pendingInviteToken.value) throw new Error(AppErrorCode.INVITE_NOT_AVAILABLE)
     const nickname = nicknameSchema.parse(nicknameValue)
     const response = await request('/memberships', {
       method: 'POST',
@@ -288,10 +306,10 @@ export const useSessionStore = defineStore('session', () => {
     })
     if (!response.ok) {
       const code: PartyJoinError = response.status === 404
-        ? 'INVITE_NOT_AVAILABLE'
+        ? AppErrorCode.INVITE_NOT_AVAILABLE
         : response.status === 409
-          ? 'ALREADY_IN_PARTY'
-          : 'PARTY_JOIN_FAILED'
+          ? AppErrorCode.ALREADY_IN_PARTY
+          : AppErrorCode.PARTY_JOIN_FAILED
       throw new Error(code)
     }
 
@@ -322,6 +340,7 @@ export const useSessionStore = defineStore('session', () => {
     loadParty,
     replaceInvite,
     revokeInvite,
+    leaveParty,
     retainInvite,
     clearPendingInvite,
     loadInvitePreview,

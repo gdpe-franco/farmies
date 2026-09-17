@@ -101,11 +101,17 @@ const createFetcher = (
   inviteStatus = 201,
   invitePreviewStatus = 200,
   membershipStatus = 201,
+  leaveStatus = 204,
 ) => {
   const requests = []
   const fetcher = async (input, init) => {
     const url = String(input)
     requests.push({ url, init })
+    if (url.endsWith('/parties/current/membership')) {
+      return leaveStatus === 204
+        ? new Response(null, { status: 204 })
+        : Response.json({ error: leaveStatus === 403 ? 'PARTY_OWNER_REQUIRED' : leaveStatus === 503 ? 'MEMBERSHIP_DELETE_RETRY' : 'MEMBERSHIP_DELETE_FAILED' }, { status: leaveStatus })
+    }
     if (url.endsWith('/memberships')) {
       return membershipStatus === 201 || membershipStatus === 200
         ? Response.json(joinedParty, { status: membershipStatus })
@@ -748,4 +754,34 @@ test('Party invite management', async (suite) => {
       })
     }
   })
+})
+
+test('Party leaving', async (suite) => {
+  for (const testCase of [
+    { name: 'clears the current Party after leaving', status: 204, error: null, clears: true },
+    { name: 'clears access while object cleanup is pending', status: 503, error: /PARTY_LEAVE_CLEANUP_PENDING/, clears: true },
+    { name: 'keeps Party state when leaving fails', status: 500, error: /PARTY_LEAVE_FAILED/, clears: false },
+    { name: 'keeps owner state when transfer is required', status: 403, error: /PARTY_OWNER_REQUIRED/, clears: false },
+  ]) {
+    await suite.test(testCase.name, async () => {
+      setActivePinia(createPinia())
+      const api = createFetcher(200, 201, 200, 201, 200, 201, testCase.status)
+      const store = useSessionStore()
+      await store.initialize(
+        createAuth({ session: { access_token: 'valid-token' } }).client,
+        'https://api.farmies.test',
+        api.fetcher,
+      )
+      await store.loadParty()
+
+      if (testCase.error) await assert.rejects(store.leaveParty(), testCase.error)
+      else await store.leaveParty()
+
+      assert.equal(store.party === null, testCase.clears)
+      const request = api.requests.at(-1)
+      assert.equal(request.url, 'https://api.farmies.test/parties/current/membership')
+      assert.equal(request.init.method, 'DELETE')
+      assert.equal(new Headers(request.init.headers).get('Authorization'), 'Bearer valid-token')
+    })
+  }
 })

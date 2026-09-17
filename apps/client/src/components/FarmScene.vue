@@ -66,6 +66,7 @@ import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { useI18n } from 'vue-i18n'
 import { loadAvatar } from '../avatar-api'
+import { AppErrorCode } from '../error-codes.ts'
 import { activityAt, sceneSchema, type SceneData } from '../farm-scene'
 import { useSessionStore } from '../stores/session'
 
@@ -101,7 +102,7 @@ const refresh = async () => {
   const loadedFaces = new Map<string, ImageBitmap>()
   try {
     const response = await session.request('/parties/current/scene')
-    if (!response.ok) throw new Error('SCENE_LOAD_FAILED')
+    if (!response.ok) throw new Error(AppErrorCode.SCENE_LOAD_FAILED)
     const serverDate = Date.parse(response.headers.get('Date') ?? '')
     timeOffset = Number.isFinite(serverDate) ? serverDate - Date.now() : 0
     const scene = sceneSchema.parse(await response.json())

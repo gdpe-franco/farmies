@@ -50,6 +50,7 @@ test('authorized API endpoints', async (suite) => {
   const inviteRequests = []
   const invitePreviewRequests = []
   const joinRequests = []
+  const leaveRequests = []
   const currentParty = {
     party: {
       id: 84n,
@@ -76,6 +77,7 @@ test('authorized API endpoints', async (suite) => {
     status: 'joined',
     value: { ...currentParty, isOwner: false, inviteActive: true },
   }
+  let leaveResult = { status: 'left' }
   const user = {
     id: 42n,
     preferredLocale: 'en',
@@ -117,6 +119,11 @@ test('authorized API endpoints', async (suite) => {
       joinRequests.push({ id, input })
       if (joinResult instanceof Error) throw joinResult
       return joinResult
+    },
+    leaveParty: async (_bindings, id) => {
+      leaveRequests.push(id)
+      if (leaveResult instanceof Error) throw leaveResult
+      return leaveResult
     },
     updateUserLocale: async (_bindings, id, preferredLocale) => {
       requestedIds.push(id)
@@ -625,6 +632,28 @@ test('authorized API endpoints', async (suite) => {
         if (testCase.error) assert.deepEqual(await response.json(), { error: testCase.error })
       })
     }
+  })
+
+  await suite.test('leaving a Party', async (leaveTests) => {
+    for (const testCase of [
+      { name: 'leaves the current Party', result: { status: 'left' }, status: 204, error: null },
+      { name: 'accepts an idempotent retry', result: { status: 'already_left' }, status: 204, error: null },
+      { name: 'requires ownership transfer first', result: { status: 'owner_required' }, status: 403, error: 'PARTY_OWNER_REQUIRED' },
+      { name: 'makes object cleanup retryable', result: { status: 'cleanup_pending' }, status: 503, error: 'MEMBERSHIP_DELETE_RETRY' },
+      { name: 'returns a stable failure', result: new Error('database unavailable'), status: 500, error: 'MEMBERSHIP_DELETE_FAILED' },
+    ]) {
+      await leaveTests.test(testCase.name, async () => {
+        leaveResult = testCase.result
+        const response = await app.request('/parties/current/membership', {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${validToken}`, Origin: bindings.CLIENT_ORIGIN },
+        }, bindings)
+        assert.equal(response.status, testCase.status)
+        assert.equal(response.headers.get('Access-Control-Allow-Origin'), bindings.CLIENT_ORIGIN)
+        if (testCase.error) assert.deepEqual(await response.json(), { error: testCase.error })
+      })
+    }
+    assert.equal(leaveRequests.length, 5)
   })
 })
 

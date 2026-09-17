@@ -31,6 +31,39 @@
           @changed="sceneRevision++"
         />
 
+        <q-btn
+          v-if="!session.party.isOwner"
+          flat
+          color="negative"
+          :label="t('party.leave')"
+          :disable="loading"
+          @click="leaveDialog = true"
+        />
+
+        <q-dialog v-model="leaveDialog">
+          <q-card class="farmies-card">
+            <q-card-section>
+              <h3 class="text-h6 q-my-sm">
+                {{ t('confirmation.leave') }}
+              </h3>
+              <p>{{ t('party.leaveDescription') }}</p>
+            </q-card-section>
+            <q-card-actions align="right">
+              <q-btn
+                v-close-popup
+                flat
+                :label="t('party.keepMembership')"
+              />
+              <q-btn
+                color="negative"
+                :label="t('party.leave')"
+                :loading="loading"
+                @click="leaveParty"
+              />
+            </q-card-actions>
+          </q-card>
+        </q-dialog>
+
         <section
           v-if="session.party.isOwner"
           class="farmies-panel q-mt-md"
@@ -124,6 +157,14 @@
           {{ t(actionError) }}
         </q-banner>
         <q-btn
+          v-if="actionError === 'party.leaveCleanupError'"
+          outline
+          color="negative"
+          :label="t('party.retryLeaveCleanup')"
+          :loading="loading"
+          @click="leaveParty"
+        />
+        <q-btn
           class="full-width"
           color="primary"
           type="submit"
@@ -150,6 +191,7 @@ import { useI18n } from 'vue-i18n'
 
 import AvatarSetup from './AvatarSetup.vue'
 import FarmScene from './FarmScene.vue'
+import { AppErrorCode } from '../error-codes.ts'
 import { nicknameSchema, partyNameSchema, useSessionStore } from '../stores/session'
 
 const { locale, t } = useI18n()
@@ -159,7 +201,10 @@ const displayName = ref('')
 const nickname = ref('')
 const loading = ref(false)
 const loadingParty = ref(true)
-const actionError = ref<'party.alreadyMember' | 'party.createError' | 'party.loadError' | null>(null)
+const leaveDialog = ref(false)
+const actionError = ref<
+  'party.alreadyMember' | 'party.createError' | 'party.loadError' | 'party.leaveError' | 'party.leaveCleanupError' | null
+>(null)
 const inviteMessage = ref<{
   error: boolean
   key: 'invite.copied' | 'invite.copyError' | 'invite.updateError'
@@ -183,7 +228,7 @@ const createParty = async () => {
   try {
     await session.createParty(displayName.value, nickname.value)
   } catch (error) {
-    actionError.value = error instanceof Error && error.message === 'ALREADY_IN_PARTY'
+    actionError.value = error instanceof Error && error.message === AppErrorCode.ALREADY_IN_PARTY
       ? 'party.alreadyMember'
       : 'party.createError'
   } finally {
@@ -219,6 +264,22 @@ const revokeInvite = async () => {
     await session.revokeInvite()
   } catch {
     inviteMessage.value = { error: true, key: 'invite.updateError' }
+  } finally {
+    loading.value = false
+  }
+}
+
+const leaveParty = async () => {
+  loading.value = true
+  actionError.value = null
+  try {
+    await session.leaveParty()
+    leaveDialog.value = false
+  } catch (error) {
+    actionError.value = error instanceof Error && error.message === AppErrorCode.PARTY_LEAVE_CLEANUP_PENDING
+      ? 'party.leaveCleanupError'
+      : 'party.leaveError'
+    if (!session.party) leaveDialog.value = false
   } finally {
     loading.value = false
   }
