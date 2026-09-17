@@ -17,6 +17,7 @@ type SessionStorage = Pick<Storage, 'getItem' | 'removeItem' | 'setItem'>
 export type PartyCreationError = typeof AppErrorCode.ALREADY_IN_PARTY | typeof AppErrorCode.PARTY_CREATION_FAILED
 export type PartyJoinError = typeof AppErrorCode.ALREADY_IN_PARTY | typeof AppErrorCode.INVITE_NOT_AVAILABLE | typeof AppErrorCode.PARTY_JOIN_FAILED
 export type PartyLeaveError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_LEAVE_CLEANUP_PENDING | typeof AppErrorCode.PARTY_LEAVE_FAILED
+export type PartyDeleteError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_TRANSFER_REQUIRED | typeof AppErrorCode.PARTY_DELETE_RETRY | typeof AppErrorCode.PARTY_DELETE_FAILED
 export type PartyTransferError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_SUCCESSOR_NOT_AVAILABLE | typeof AppErrorCode.PARTY_TRANSFER_FAILED
 
 export const emailSchema = z.string().trim().toLowerCase().pipe(z.email())
@@ -308,6 +309,25 @@ export const useSessionStore = defineStore('session', () => {
     transferCandidates.value = []
   }
 
+  const deleteParty = async () => {
+    const response = await request('/parties/current', { method: 'DELETE' })
+    if (response.ok || response.status === 503) {
+      party.value = null
+      invite.value = null
+      transferCandidates.value = []
+    }
+    if (!response.ok) {
+      const code: PartyDeleteError = response.status === 403
+        ? AppErrorCode.PARTY_OWNER_REQUIRED
+        : response.status === 409
+          ? AppErrorCode.PARTY_TRANSFER_REQUIRED
+          : response.status === 503
+            ? AppErrorCode.PARTY_DELETE_RETRY
+            : AppErrorCode.PARTY_DELETE_FAILED
+      throw new Error(code)
+    }
+  }
+
   const retainInvite = (value: string) => {
     const token = inviteTokenSchema.parse(value)
     pendingInviteToken.value = token
@@ -381,6 +401,7 @@ export const useSessionStore = defineStore('session', () => {
     leaveParty,
     loadTransferCandidates,
     transferOwnership,
+    deleteParty,
     retainInvite,
     clearPendingInvite,
     loadInvitePreview,

@@ -3,7 +3,7 @@ import type { Hyperdrive, R2Bucket } from '@cloudflare/workers-types'
 import { alias } from 'drizzle-orm/pg-core'
 
 import { openDatabase } from './db/index.ts'
-import { memberAvatars, memberships, parties, users } from './db/schema.ts'
+import { invites, memberAvatars, memberships, parties, users } from './db/schema.ts'
 
 type LeavePartyResult = { status: 'left' | 'already_left' | 'owner_required' | 'cleanup_pending' }
 export type LeaveParty = (
@@ -25,6 +25,14 @@ export type TransferParty = (
   authUserId: string,
   successorMembershipId: bigint,
 ) => Promise<TransferPartyResult>
+
+type DeletePartyResult = {
+  status: 'deleted' | 'already_deleted' | 'owner_required' | 'transfer_required' | 'cleanup_pending'
+}
+export type DeleteParty = (
+  bindings: { HYPERDRIVE: Hyperdrive; AVATARS: R2Bucket },
+  authUserId: string,
+) => Promise<DeletePartyResult>
 
 export const findTransferCandidates: FindTransferCandidates = async (bindings, authUserId) => {
   const { client, database } = openDatabase(bindings)
@@ -118,6 +126,96 @@ export const transferParty: TransferParty = async (bindings, authUserId, success
         .where(and(eq(parties.id, candidate.partyId), isNull(parties.deletedAt)))
       return { status: 'transferred' }
     })
+  } finally {
+    await client.end()
+  }
+}
+
+export const deleteParty: DeleteParty = async (bindings, authUserId) => {
+  const { client, database } = openDatabase(bindings)
+  try {
+    const result = await database.transaction(async (transaction) => {
+      const [user] = await transaction.select({ id: users.id }).from(users)
+        .where(and(eq(users.authUserId, authUserId), isNull(users.deletedAt)))
+        .limit(1)
+      if (!user) return { status: 'already_deleted' as const }
+
+      const [candidate] = await transaction
+        .select({ partyId: memberships.partyId })
+        .from(memberships)
+        .innerJoin(parties, and(eq(parties.id, memberships.partyId), isNull(parties.deletedAt)))
+        .where(and(eq(memberships.userId, user.id), isNull(memberships.deletedAt)))
+        .limit(1)
+
+      if (candidate) {
+        await transaction.execute(sql`
+          select id from ${parties}
+          where id = ${candidate.partyId} and deleted_at is null
+          for update
+        `)
+        const [active] = await transaction
+          .select({ membershipId: memberships.id, ownerUserId: parties.ownerUserId })
+          .from(memberships)
+          .innerJoin(parties, and(eq(parties.id, memberships.partyId), isNull(parties.deletedAt)))
+          .where(and(
+            eq(memberships.partyId, candidate.partyId),
+            eq(memberships.userId, user.id),
+            isNull(memberships.deletedAt),
+          ))
+          .limit(1)
+        if (active) {
+          if (active.ownerUserId !== user.id) return { status: 'owner_required' as const }
+          const activeMembers = await transaction.select({ id: memberships.id }).from(memberships)
+            .where(and(eq(memberships.partyId, candidate.partyId), isNull(memberships.deletedAt)))
+          if (activeMembers.length !== 1) return { status: 'transfer_required' as const }
+
+          const [avatar] = await transaction.select({ objectKey: memberAvatars.objectKey })
+            .from(memberAvatars)
+            .where(eq(memberAvatars.membershipId, active.membershipId))
+            .limit(1)
+          const [{ deletedAt }] = await transaction.select({
+            deletedAt: sql`clock_timestamp()`.mapWith(parties.deletedAt),
+          })
+            .from(parties)
+            .where(eq(parties.id, candidate.partyId))
+          await transaction.update(memberAvatars).set({ deletedAt })
+            .where(and(eq(memberAvatars.membershipId, active.membershipId), isNull(memberAvatars.deletedAt)))
+          await transaction.update(invites).set({ deletedAt })
+            .where(and(eq(invites.partyId, candidate.partyId), isNull(invites.deletedAt)))
+          await transaction.update(memberships).set({ deletedAt })
+            .where(eq(memberships.id, active.membershipId))
+          await transaction.update(parties).set({ deletedAt, updatedAt: deletedAt })
+            .where(and(eq(parties.id, candidate.partyId), isNull(parties.deletedAt)))
+          return { status: 'deleted' as const, objectKey: avatar?.objectKey }
+        }
+      }
+
+      const [avatar] = await transaction
+        .select({ objectKey: memberAvatars.objectKey })
+        .from(parties)
+        .innerJoin(memberships, and(
+          eq(memberships.partyId, parties.id),
+          eq(memberships.userId, user.id),
+          isNotNull(memberships.deletedAt),
+        ))
+        .innerJoin(memberAvatars, and(
+          eq(memberAvatars.membershipId, memberships.id),
+          isNotNull(memberAvatars.deletedAt),
+        ))
+        .where(and(eq(parties.ownerUserId, user.id), isNotNull(parties.deletedAt)))
+        .orderBy(desc(parties.deletedAt), desc(parties.id))
+        .limit(1)
+      return { status: 'already_deleted' as const, objectKey: avatar?.objectKey }
+    })
+
+    if ('objectKey' in result && result.objectKey) {
+      try {
+        await bindings.AVATARS.delete(result.objectKey)
+      } catch {
+        return { status: 'cleanup_pending' }
+      }
+    }
+    return { status: result.status }
   } finally {
     await client.end()
   }

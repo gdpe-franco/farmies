@@ -147,9 +147,16 @@
               @click="ownershipDialog = true"
             />
           </template>
-          <p v-else-if="!ownershipError">
-            {{ t('ownership.empty') }}
-          </p>
+          <template v-else-if="!ownershipError">
+            <p>{{ t('ownership.soleOwner') }}</p>
+            <q-btn
+              outline
+              color="negative"
+              :label="t('ownership.delete')"
+              :disable="loading"
+              @click="deleteDialog = true"
+            />
+          </template>
         </section>
 
         <q-dialog v-model="ownershipDialog">
@@ -171,6 +178,30 @@
                 :label="t('ownership.transfer')"
                 :loading="loading"
                 @click="transferOwnership"
+              />
+            </q-card-actions>
+          </q-card>
+        </q-dialog>
+
+        <q-dialog v-model="deleteDialog">
+          <q-card class="farmies-card">
+            <q-card-section>
+              <h3 class="text-h6 q-my-sm">
+                {{ t('confirmation.deleteParty') }}
+              </h3>
+              <p>{{ t('ownership.deleteConfirm') }}</p>
+            </q-card-section>
+            <q-card-actions align="right">
+              <q-btn
+                v-close-popup
+                flat
+                :label="t('ownership.cancelDelete')"
+              />
+              <q-btn
+                color="negative"
+                :label="t('ownership.delete')"
+                :loading="loading"
+                @click="deleteParty"
               />
             </q-card-actions>
           </q-card>
@@ -238,6 +269,14 @@
           @click="leaveParty"
         />
         <q-btn
+          v-if="actionError === 'ownership.deleteCleanupError'"
+          outline
+          color="negative"
+          :label="t('ownership.retryDeleteCleanup')"
+          :loading="loading"
+          @click="deleteParty"
+        />
+        <q-btn
           class="full-width"
           color="primary"
           type="submit"
@@ -277,10 +316,15 @@ const loading = ref(false)
 const loadingParty = ref(true)
 const leaveDialog = ref(false)
 const ownershipDialog = ref(false)
+const deleteDialog = ref(false)
 const successorMembershipId = ref<string | null>(null)
-const ownershipError = ref<'ownership.loadError' | 'ownership.staleError' | 'ownership.transferError' | null>(null)
+const ownershipError = ref<
+  'ownership.loadError' | 'ownership.staleError' | 'ownership.transferError' | 'ownership.transferRequired'
+  | 'ownership.deleteError' | null
+>(null)
 const actionError = ref<
-  'party.alreadyMember' | 'party.createError' | 'party.loadError' | 'party.leaveError' | 'party.leaveCleanupError' | null
+  'party.alreadyMember' | 'party.createError' | 'party.loadError' | 'party.leaveError' | 'party.leaveCleanupError'
+  | 'ownership.deleteCleanupError' | null
 >(null)
 const inviteMessage = ref<{
   error: boolean
@@ -380,6 +424,29 @@ const transferOwnership = async () => {
         ownershipError.value = 'ownership.loadError'
       })
     } else ownershipError.value = 'ownership.transferError'
+  } finally {
+    loading.value = false
+  }
+}
+
+const deleteParty = async () => {
+  loading.value = true
+  ownershipError.value = null
+  actionError.value = null
+  try {
+    await session.deleteParty()
+    deleteDialog.value = false
+  } catch (error) {
+    if (error instanceof Error && error.message === AppErrorCode.PARTY_DELETE_RETRY) {
+      actionError.value = 'ownership.deleteCleanupError'
+      deleteDialog.value = false
+    } else if (error instanceof Error && error.message === AppErrorCode.PARTY_TRANSFER_REQUIRED) {
+      ownershipError.value = 'ownership.transferRequired'
+      deleteDialog.value = false
+      await session.loadTransferCandidates().catch(() => {
+        ownershipError.value = 'ownership.loadError'
+      })
+    } else ownershipError.value = 'ownership.deleteError'
   } finally {
     loading.value = false
   }

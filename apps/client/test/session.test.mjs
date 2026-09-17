@@ -104,6 +104,7 @@ const createFetcher = (
   leaveStatus = 204,
   transferCandidatesStatus = 200,
   transferStatus = 204,
+  deletePartyStatus = 204,
 ) => {
   const requests = []
   const fetcher = async (input, init) => {
@@ -144,6 +145,19 @@ const createFetcher = (
           )
     }
     if (url.endsWith('/parties/current')) {
+      if (init?.method === 'DELETE') {
+        return deletePartyStatus === 204
+          ? new Response(null, { status: 204 })
+          : Response.json({
+              error: deletePartyStatus === 403
+                ? 'PARTY_OWNER_REQUIRED'
+                : deletePartyStatus === 409
+                  ? 'PARTY_TRANSFER_REQUIRED'
+                  : deletePartyStatus === 503
+                    ? 'PARTY_DELETE_RETRY'
+                    : 'PARTY_DELETE_FAILED',
+            }, { status: deletePartyStatus })
+      }
       return currentPartyStatus === 200
         ? Response.json(createdParty)
         : Response.json({ error: 'PARTY_NOT_FOUND' }, { status: currentPartyStatus })
@@ -841,6 +855,36 @@ test('Party ownership transfer', async (suite) => {
         : store.transferOwnership('86')
       await assert.rejects(action, testCase.error)
       assert.equal(store.party.isOwner, true)
+    })
+  }
+})
+
+test('Party deletion', async (suite) => {
+  for (const testCase of [
+    { name: 'clears the sole-member Party after deletion', status: 204, error: null, clears: true },
+    { name: 'clears access while photo cleanup is pending', status: 503, error: /PARTY_DELETE_RETRY/, clears: true },
+    { name: 'keeps the Party when ownership changed', status: 403, error: /PARTY_OWNER_REQUIRED/, clears: false },
+    { name: 'keeps the Party when transfer is required', status: 409, error: /PARTY_TRANSFER_REQUIRED/, clears: false },
+    { name: 'keeps the Party on deletion failure', status: 500, error: /PARTY_DELETE_FAILED/, clears: false },
+  ]) {
+    await suite.test(testCase.name, async () => {
+      setActivePinia(createPinia())
+      const api = createFetcher(200, 201, 200, 201, 200, 201, 204, 200, 204, testCase.status)
+      const store = useSessionStore()
+      await store.initialize(
+        createAuth({ session: { access_token: 'valid-token' } }).client,
+        'https://api.farmies.test',
+        api.fetcher,
+      )
+      await store.loadParty()
+
+      if (testCase.error) await assert.rejects(store.deleteParty(), testCase.error)
+      else await store.deleteParty()
+
+      assert.equal(store.party === null, testCase.clears)
+      const request = api.requests.at(-1)
+      assert.equal(request.url, 'https://api.farmies.test/parties/current')
+      assert.equal(request.init.method, 'DELETE')
     })
   }
 })

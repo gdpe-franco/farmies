@@ -10,9 +10,11 @@ import { manageAvatar, validateAvatar, type ManageAvatar } from './avatars.ts'
 import { openDatabase } from './db/index.ts'
 import { ApiErrorCode } from './error-codes.ts'
 import {
+  deleteParty,
   findTransferCandidates,
   leaveParty,
   transferParty,
+  type DeleteParty,
   type FindTransferCandidates,
   type LeaveParty,
   type TransferParty,
@@ -111,6 +113,7 @@ type Dependencies = {
   findScene: typeof findScene
   manageAvatar: ManageAvatar
   createParty: CreateParty
+  deleteParty: DeleteParty
   findCurrentParty: FindCurrentParty
   findOrCreateUser: FindOrCreateUser
   findInvitePreview: FindInvitePreview
@@ -569,6 +572,7 @@ const serializeParty = ({ party, membership, isOwner, inviteActive }: PartyMembe
 export const createApp = (dependencies: Partial<Dependencies> = {}) => {
   const avatarOperation = dependencies.manageAvatar ?? manageAvatar
   const addParty = dependencies.createParty ?? createParty
+  const deleteCurrentParty = dependencies.deleteParty ?? deleteParty
   const getInvitePreview = dependencies.findInvitePreview ?? findInvitePreview
   const getCurrentParty = dependencies.findCurrentParty ?? findCurrentParty
   const getUser = dependencies.findOrCreateUser ?? findOrCreateUser
@@ -764,6 +768,24 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
       return context.json(serializeParty(party))
     } catch {
       return context.json({ error: ApiErrorCode.PARTY_LOAD_FAILED }, 500)
+    }
+  })
+
+  app.delete('/parties/current', async (context) => {
+    try {
+      const result = await deleteCurrentParty(context.env, context.get('authUserId'))
+      if (result.status === 'owner_required') {
+        return context.json({ error: ApiErrorCode.PARTY_OWNER_REQUIRED }, 403)
+      }
+      if (result.status === 'transfer_required') {
+        return context.json({ error: ApiErrorCode.PARTY_TRANSFER_REQUIRED }, 409)
+      }
+      if (result.status === 'cleanup_pending') {
+        return context.json({ error: ApiErrorCode.PARTY_DELETE_RETRY }, 503)
+      }
+      return context.body(null, 204)
+    } catch {
+      return context.json({ error: ApiErrorCode.PARTY_DELETE_FAILED }, 500)
     }
   })
 

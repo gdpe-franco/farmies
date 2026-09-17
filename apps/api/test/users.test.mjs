@@ -47,6 +47,7 @@ test('authorized API endpoints', async (suite) => {
   const requestedIds = []
   const localeUpdates = []
   const partyRequests = []
+  const deletePartyRequests = []
   const inviteRequests = []
   const invitePreviewRequests = []
   const joinRequests = []
@@ -80,6 +81,7 @@ test('authorized API endpoints', async (suite) => {
     value: { ...currentParty, isOwner: false, inviteActive: true },
   }
   let leaveResult = { status: 'left' }
+  let deletePartyResult = { status: 'deleted' }
   let transferCandidatesResult = {
     status: 'found',
     members: [{ membershipId: 86n, nickname: 'Moss' }],
@@ -107,6 +109,11 @@ test('authorized API endpoints', async (suite) => {
           inviteActive: false,
         },
       }
+    },
+    deleteParty: async (_bindings, id) => {
+      deletePartyRequests.push(id)
+      if (deletePartyResult instanceof Error) throw deletePartyResult
+      return deletePartyResult
     },
     findCurrentParty: async () => {
       if (currentPartyResult instanceof Error) throw currentPartyResult
@@ -716,6 +723,28 @@ test('authorized API endpoints', async (suite) => {
     }
     assert.deepEqual(transferCandidateRequests, [authUserId, authUserId])
     assert.deepEqual(transferRequests.map(({ membershipId }) => membershipId), [86n, 86n, 86n, 86n])
+  })
+
+  await suite.test('deleting a sole-member Party', async (deleteTests) => {
+    for (const testCase of [
+      { name: 'deletes the Party', result: { status: 'deleted' }, status: 204, error: null },
+      { name: 'accepts an idempotent retry', result: { status: 'already_deleted' }, status: 204, error: null },
+      { name: 'requires the current owner', result: { status: 'owner_required' }, status: 403, error: 'PARTY_OWNER_REQUIRED' },
+      { name: 'requires transfer while another member remains', result: { status: 'transfer_required' }, status: 409, error: 'PARTY_TRANSFER_REQUIRED' },
+      { name: 'makes object cleanup retryable', result: { status: 'cleanup_pending' }, status: 503, error: 'PARTY_DELETE_RETRY' },
+      { name: 'returns a stable deletion failure', result: new Error('database unavailable'), status: 500, error: 'PARTY_DELETE_FAILED' },
+    ]) {
+      await deleteTests.test(testCase.name, async () => {
+        deletePartyResult = testCase.result
+        const response = await app.request('/parties/current', {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${validToken}`, Origin: bindings.CLIENT_ORIGIN },
+        }, bindings)
+        assert.equal(response.status, testCase.status)
+        if (testCase.error) assert.deepEqual(await response.json(), { error: testCase.error })
+      })
+    }
+    assert.deepEqual(deletePartyRequests, Array(6).fill(authUserId))
   })
 })
 
