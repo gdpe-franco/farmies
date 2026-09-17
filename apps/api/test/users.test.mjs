@@ -51,6 +51,8 @@ test('authorized API endpoints', async (suite) => {
   const invitePreviewRequests = []
   const joinRequests = []
   const leaveRequests = []
+  const transferCandidateRequests = []
+  const transferRequests = []
   const currentParty = {
     party: {
       id: 84n,
@@ -78,6 +80,11 @@ test('authorized API endpoints', async (suite) => {
     value: { ...currentParty, isOwner: false, inviteActive: true },
   }
   let leaveResult = { status: 'left' }
+  let transferCandidatesResult = {
+    status: 'found',
+    members: [{ membershipId: 86n, nickname: 'Moss' }],
+  }
+  let transferResult = { status: 'transferred' }
   const user = {
     id: 42n,
     preferredLocale: 'en',
@@ -115,6 +122,11 @@ test('authorized API endpoints', async (suite) => {
       if (tokenHash === await hashInviteToken('c'.repeat(43))) throw new Error('database unavailable')
       return { displayName: 'Green Friends', occupancy: 4 }
     },
+    findTransferCandidates: async (_bindings, id) => {
+      transferCandidateRequests.push(id)
+      if (transferCandidatesResult instanceof Error) throw transferCandidatesResult
+      return transferCandidatesResult
+    },
     joinParty: async (_bindings, id, input) => {
       joinRequests.push({ id, input })
       if (joinResult instanceof Error) throw joinResult
@@ -134,6 +146,11 @@ test('authorized API endpoints', async (suite) => {
       inviteRequests.push({ id, action })
       if (inviteResult instanceof Error) throw inviteResult
       return inviteResult
+    },
+    transferParty: async (_bindings, id, membershipId) => {
+      transferRequests.push({ id, membershipId })
+      if (transferResult instanceof Error) throw transferResult
+      return transferResult
     },
   })
   const bindings = {
@@ -654,6 +671,51 @@ test('authorized API endpoints', async (suite) => {
       })
     }
     assert.equal(leaveRequests.length, 5)
+  })
+
+  await suite.test('transferring Party ownership', async (transferTests) => {
+    transferCandidatesResult = {
+      status: 'found',
+      members: [{ membershipId: 86n, nickname: 'Moss' }],
+    }
+    const candidates = await app.request('/parties/current/transfer-candidates', {
+      headers: { Authorization: `Bearer ${validToken}`, Origin: bindings.CLIENT_ORIGIN },
+    }, bindings)
+    assert.equal(candidates.status, 200)
+    assert.deepEqual(await candidates.json(), {
+      members: [{ membershipId: '86', nickname: 'Moss' }],
+    })
+    transferCandidatesResult = { status: 'owner_required' }
+    const forbiddenCandidates = await app.request('/parties/current/transfer-candidates', {
+      headers: { Authorization: `Bearer ${validToken}` },
+    }, bindings)
+    assert.equal(forbiddenCandidates.status, 403)
+    assert.deepEqual(await forbiddenCandidates.json(), { error: 'PARTY_OWNER_REQUIRED' })
+
+    for (const testCase of [
+      { name: 'transfers to an active member', body: { successorMembershipId: '86' }, result: { status: 'transferred' }, status: 204, error: null },
+      { name: 'rejects malformed membership IDs', body: { successorMembershipId: '0' }, result: { status: 'transferred' }, status: 400, error: 'INVALID_REQUEST' },
+      { name: 'requires the current owner', body: { successorMembershipId: '86' }, result: { status: 'owner_required' }, status: 403, error: 'PARTY_OWNER_REQUIRED' },
+      { name: 'rejects a stale or cross-Party successor', body: { successorMembershipId: '86' }, result: { status: 'successor_not_available' }, status: 404, error: 'PARTY_SUCCESSOR_NOT_AVAILABLE' },
+      { name: 'returns a stable transfer failure', body: { successorMembershipId: '86' }, result: new Error('database unavailable'), status: 500, error: 'PARTY_TRANSFER_FAILED' },
+    ]) {
+      await transferTests.test(testCase.name, async () => {
+        transferResult = testCase.result
+        const response = await app.request('/parties/current/owner', {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${validToken}`,
+            'Content-Type': 'application/json',
+            Origin: bindings.CLIENT_ORIGIN,
+          },
+          body: JSON.stringify(testCase.body),
+        }, bindings)
+        assert.equal(response.status, testCase.status)
+        if (testCase.error) assert.deepEqual(await response.json(), { error: testCase.error })
+      })
+    }
+    assert.deepEqual(transferCandidateRequests, [authUserId, authUserId])
+    assert.deepEqual(transferRequests.map(({ membershipId }) => membershipId), [86n, 86n, 86n, 86n])
   })
 })
 

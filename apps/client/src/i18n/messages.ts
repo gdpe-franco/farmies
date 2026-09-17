@@ -85,6 +85,16 @@ export const messages = {
       unavailable: 'This invitation is no longer available.',
       loadError: 'We could not load this invitation. Try again.',
     },
+    ownership: {
+      title: 'Party ownership',
+      introduction: 'Choose another member to manage invites and ownership before you leave.',
+      successor: 'New owner', transfer: 'Transfer ownership', cancel: 'Keep ownership',
+      confirm: 'Make {nickname} the new owner? You will remain a regular member.',
+      empty: 'Invite another member before transferring ownership.',
+      loadError: 'We could not load possible new owners. Try refreshing.',
+      staleError: 'That member is no longer available. Choose another member.',
+      transferError: 'We could not transfer ownership. Try again.',
+    },
     avatar: {
       saving: 'Loading or saving your avatar…',
       saved: 'Your avatar is saved. Only your Party can see it.',
@@ -148,6 +158,7 @@ export const messages = {
     confirmation: {
       join: 'Join this Party?',
       leave: 'Leave this Party?',
+      transfer: 'Transfer Party ownership?',
       deleteParty: 'Delete this Party?',
       removeAvatar: 'Remove your avatar?',
     },
@@ -232,6 +243,16 @@ export const messages = {
       unavailable: 'Esta invitación ya no está disponible.',
       loadError: 'No pudimos cargar esta invitación. Inténtalo de nuevo.',
     },
+    ownership: {
+      title: 'Propiedad del grupo',
+      introduction: 'Elige a otro integrante para administrar las invitaciones y la propiedad antes de salir.',
+      successor: 'Nueva persona propietaria', transfer: 'Transferir propiedad', cancel: 'Conservar propiedad',
+      confirm: '¿Hacer que {nickname} sea la nueva persona propietaria? Permanecerás como integrante.',
+      empty: 'Invita a otra persona antes de transferir la propiedad.',
+      loadError: 'No pudimos cargar las posibles personas propietarias. Intenta actualizar.',
+      staleError: 'Esa persona ya no está disponible. Elige a otra.',
+      transferError: 'No pudimos transferir la propiedad. Inténtalo de nuevo.',
+    },
     avatar: {
       saving: 'Cargando o guardando tu avatar…',
       saved: 'Tu avatar está guardado. Solo tu Party puede verlo.',
@@ -295,6 +316,7 @@ export const messages = {
     confirmation: {
       join: '¿Unirte a este grupo?',
       leave: '¿Salir de este grupo?',
+      transfer: '¿Transferir la propiedad del grupo?',
       deleteParty: '¿Eliminar este grupo?',
       removeAvatar: '¿Eliminar tu avatar?',
     },

@@ -17,6 +17,7 @@ type SessionStorage = Pick<Storage, 'getItem' | 'removeItem' | 'setItem'>
 export type PartyCreationError = typeof AppErrorCode.ALREADY_IN_PARTY | typeof AppErrorCode.PARTY_CREATION_FAILED
 export type PartyJoinError = typeof AppErrorCode.ALREADY_IN_PARTY | typeof AppErrorCode.INVITE_NOT_AVAILABLE | typeof AppErrorCode.PARTY_JOIN_FAILED
 export type PartyLeaveError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_LEAVE_CLEANUP_PENDING | typeof AppErrorCode.PARTY_LEAVE_FAILED
+export type PartyTransferError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_SUCCESSOR_NOT_AVAILABLE | typeof AppErrorCode.PARTY_TRANSFER_FAILED
 
 export const emailSchema = z.string().trim().toLowerCase().pipe(z.email())
 export const emailCodeSchema = z.string().regex(/^\d{6}$/)
@@ -60,6 +61,13 @@ const invitePreviewResponseSchema = z.object({
   }),
 })
 
+const transferCandidatesResponseSchema = z.object({
+  members: z.array(z.object({
+    membershipId: z.string().regex(/^\d+$/),
+    nickname: z.string(),
+  })),
+})
+
 export const partyNameSchema = z.string().trim().min(1).max(60)
 export const nicknameSchema = z.string().trim().min(1).max(40)
 export const inviteTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
@@ -73,6 +81,7 @@ export const useSessionStore = defineStore('session', () => {
   const invite = ref<z.infer<typeof inviteResponseSchema> | null>(null)
   const invitePreview = ref<z.infer<typeof invitePreviewResponseSchema>['party'] | null>(null)
   const pendingInviteToken = ref<string | null>(null)
+  const transferCandidates = ref<z.infer<typeof transferCandidatesResponseSchema>['members']>([])
   const initialized = ref(false)
   const error = ref<SessionError | null>(null)
   const pendingEmail = ref<string | null>(null)
@@ -90,6 +99,7 @@ export const useSessionStore = defineStore('session', () => {
     party.value = null
     invite.value = null
     invitePreview.value = null
+    transferCandidates.value = []
     error.value = null
   }
 
@@ -271,6 +281,33 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  const loadTransferCandidates = async () => {
+    const response = await request('/parties/current/transfer-candidates')
+    if (!response.ok) throw new Error(response.status === 403
+      ? AppErrorCode.PARTY_OWNER_REQUIRED
+      : AppErrorCode.PARTY_TRANSFER_FAILED)
+    transferCandidates.value = transferCandidatesResponseSchema.parse(await response.json()).members
+  }
+
+  const transferOwnership = async (successorMembershipId: string) => {
+    const response = await request('/parties/current/owner', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ successorMembershipId }),
+    })
+    if (!response.ok) {
+      const code: PartyTransferError = response.status === 403
+        ? AppErrorCode.PARTY_OWNER_REQUIRED
+        : response.status === 404
+          ? AppErrorCode.PARTY_SUCCESSOR_NOT_AVAILABLE
+          : AppErrorCode.PARTY_TRANSFER_FAILED
+      throw new Error(code)
+    }
+    if (party.value) party.value.isOwner = false
+    invite.value = null
+    transferCandidates.value = []
+  }
+
   const retainInvite = (value: string) => {
     const token = inviteTokenSchema.parse(value)
     pendingInviteToken.value = token
@@ -324,6 +361,7 @@ export const useSessionStore = defineStore('session', () => {
     invite,
     invitePreview,
     pendingInviteToken,
+    transferCandidates,
     initialized,
     error,
     pendingEmail,
@@ -341,6 +379,8 @@ export const useSessionStore = defineStore('session', () => {
     replaceInvite,
     revokeInvite,
     leaveParty,
+    loadTransferCandidates,
+    transferOwnership,
     retainInvite,
     clearPendingInvite,
     loadInvitePreview,

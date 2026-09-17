@@ -102,6 +102,8 @@ const createFetcher = (
   invitePreviewStatus = 200,
   membershipStatus = 201,
   leaveStatus = 204,
+  transferCandidatesStatus = 200,
+  transferStatus = 204,
 ) => {
   const requests = []
   const fetcher = async (input, init) => {
@@ -111,6 +113,16 @@ const createFetcher = (
       return leaveStatus === 204
         ? new Response(null, { status: 204 })
         : Response.json({ error: leaveStatus === 403 ? 'PARTY_OWNER_REQUIRED' : leaveStatus === 503 ? 'MEMBERSHIP_DELETE_RETRY' : 'MEMBERSHIP_DELETE_FAILED' }, { status: leaveStatus })
+    }
+    if (url.endsWith('/parties/current/transfer-candidates')) {
+      return transferCandidatesStatus === 200
+        ? Response.json({ members: [{ membershipId: '86', nickname: 'Moss' }] })
+        : Response.json({ error: transferCandidatesStatus === 403 ? 'PARTY_OWNER_REQUIRED' : 'PARTY_LOAD_FAILED' }, { status: transferCandidatesStatus })
+    }
+    if (url.endsWith('/parties/current/owner')) {
+      return transferStatus === 204
+        ? new Response(null, { status: 204 })
+        : Response.json({ error: transferStatus === 403 ? 'PARTY_OWNER_REQUIRED' : transferStatus === 404 ? 'PARTY_SUCCESSOR_NOT_AVAILABLE' : 'PARTY_TRANSFER_FAILED' }, { status: transferStatus })
     }
     if (url.endsWith('/memberships')) {
       return membershipStatus === 201 || membershipStatus === 200
@@ -782,6 +794,53 @@ test('Party leaving', async (suite) => {
       assert.equal(request.url, 'https://api.farmies.test/parties/current/membership')
       assert.equal(request.init.method, 'DELETE')
       assert.equal(new Headers(request.init.headers).get('Authorization'), 'Bearer valid-token')
+    })
+  }
+})
+
+test('Party ownership transfer', async (suite) => {
+  await suite.test('loads candidates and transfers to a confirmed member', async () => {
+    setActivePinia(createPinia())
+    const api = createFetcher()
+    const store = useSessionStore()
+    await store.initialize(
+      createAuth({ session: { access_token: 'valid-token' } }).client,
+      'https://api.farmies.test',
+      api.fetcher,
+    )
+    await store.loadParty()
+    await store.loadTransferCandidates()
+    await store.transferOwnership('86')
+
+    assert.deepEqual(store.transferCandidates, [])
+    assert.equal(store.party.isOwner, false)
+    assert.deepEqual(api.requests.slice(-2).map(({ url, init }) => ({ url, method: init.method })), [
+      { url: 'https://api.farmies.test/parties/current/transfer-candidates', method: undefined },
+      { url: 'https://api.farmies.test/parties/current/owner', method: 'PATCH' },
+    ])
+    assert.deepEqual(JSON.parse(api.requests.at(-1).init.body), { successorMembershipId: '86' })
+  })
+
+  for (const testCase of [
+    { name: 'requires the current owner to load candidates', candidatesStatus: 403, transferStatus: 204, action: 'load', error: /PARTY_OWNER_REQUIRED/ },
+    { name: 'rejects a stale successor', candidatesStatus: 200, transferStatus: 404, action: 'transfer', error: /PARTY_SUCCESSOR_NOT_AVAILABLE/ },
+    { name: 'reports a transfer failure', candidatesStatus: 200, transferStatus: 500, action: 'transfer', error: /PARTY_TRANSFER_FAILED/ },
+  ]) {
+    await suite.test(testCase.name, async () => {
+      setActivePinia(createPinia())
+      const api = createFetcher(200, 201, 200, 201, 200, 201, 204, testCase.candidatesStatus, testCase.transferStatus)
+      const store = useSessionStore()
+      await store.initialize(
+        createAuth({ session: { access_token: 'valid-token' } }).client,
+        'https://api.farmies.test',
+        api.fetcher,
+      )
+      await store.loadParty()
+      const action = testCase.action === 'load'
+        ? store.loadTransferCandidates()
+        : store.transferOwnership('86')
+      await assert.rejects(action, testCase.error)
+      assert.equal(store.party.isOwner, true)
     })
   }
 })

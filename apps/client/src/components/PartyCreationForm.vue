@@ -31,15 +31,6 @@
           @changed="sceneRevision++"
         />
 
-        <q-btn
-          v-if="!session.party.isOwner"
-          flat
-          color="negative"
-          :label="t('party.leave')"
-          :disable="loading"
-          @click="leaveDialog = true"
-        />
-
         <q-dialog v-model="leaveDialog">
           <q-card class="farmies-card">
             <q-card-section>
@@ -120,6 +111,88 @@
             />
           </div>
         </section>
+
+        <section
+          v-if="session.party.isOwner"
+          class="farmies-panel q-mt-md"
+        >
+          <h3 class="text-h6 q-mb-sm">
+            {{ t('ownership.title') }}
+          </h3>
+          <p>{{ t('ownership.introduction') }}</p>
+          <q-banner
+            v-if="ownershipError"
+            class="bg-negative text-white q-mb-md"
+            role="alert"
+          >
+            {{ t(ownershipError) }}
+          </q-banner>
+          <template v-if="session.transferCandidates.length">
+            <q-select
+              v-model="successorMembershipId"
+              outlined
+              emit-value
+              map-options
+              :options="session.transferCandidates"
+              option-label="nickname"
+              option-value="membershipId"
+              dropdown-icon="M7 10l5 5 5-5z"
+              :label="t('ownership.successor')"
+            />
+            <q-btn
+              class="q-mt-md"
+              color="primary"
+              :label="t('ownership.transfer')"
+              :disable="!successorMembershipId || loading"
+              @click="ownershipDialog = true"
+            />
+          </template>
+          <p v-else-if="!ownershipError">
+            {{ t('ownership.empty') }}
+          </p>
+        </section>
+
+        <q-dialog v-model="ownershipDialog">
+          <q-card class="farmies-card">
+            <q-card-section>
+              <h3 class="text-h6 q-my-sm">
+                {{ t('confirmation.transfer') }}
+              </h3>
+              <p>{{ t('ownership.confirm', { nickname: selectedSuccessor?.nickname }) }}</p>
+            </q-card-section>
+            <q-card-actions align="right">
+              <q-btn
+                v-close-popup
+                flat
+                :label="t('ownership.cancel')"
+              />
+              <q-btn
+                color="primary"
+                :label="t('ownership.transfer')"
+                :loading="loading"
+                @click="transferOwnership"
+              />
+            </q-card-actions>
+          </q-card>
+        </q-dialog>
+
+        <div class="row items-center q-gutter-sm q-mt-md">
+          <q-btn
+            v-if="!session.party.isOwner"
+            flat
+            color="negative"
+            :label="t('party.leave')"
+            :disable="loading"
+            @click="leaveDialog = true"
+          />
+          <q-btn
+            flat
+            no-caps
+            :label="t('authentication.signOut')"
+            :disable="loading"
+            @click="signOut"
+          />
+        </div>
       </template>
 
       <q-form
@@ -174,6 +247,7 @@
       </q-form>
 
       <q-btn
+        v-if="!session.party"
         flat
         no-caps
         class="q-mt-md"
@@ -202,6 +276,9 @@ const nickname = ref('')
 const loading = ref(false)
 const loadingParty = ref(true)
 const leaveDialog = ref(false)
+const ownershipDialog = ref(false)
+const successorMembershipId = ref<string | null>(null)
+const ownershipError = ref<'ownership.loadError' | 'ownership.staleError' | 'ownership.transferError' | null>(null)
 const actionError = ref<
   'party.alreadyMember' | 'party.createError' | 'party.loadError' | 'party.leaveError' | 'party.leaveCleanupError' | null
 >(null)
@@ -221,6 +298,9 @@ const formattedExpiry = computed(() => session.invite
       .format(new Date(session.invite.expiresAt))
   : '',
 )
+const selectedSuccessor = computed(() => session.transferCandidates.find(
+  ({ membershipId }) => membershipId === successorMembershipId.value,
+))
 
 const createParty = async () => {
   loading.value = true
@@ -285,6 +365,26 @@ const leaveParty = async () => {
   }
 }
 
+const transferOwnership = async () => {
+  if (!successorMembershipId.value) return
+  loading.value = true
+  ownershipError.value = null
+  try {
+    await session.transferOwnership(successorMembershipId.value)
+    ownershipDialog.value = false
+  } catch (error) {
+    if (error instanceof Error && error.message === AppErrorCode.PARTY_SUCCESSOR_NOT_AVAILABLE) {
+      ownershipError.value = 'ownership.staleError'
+      successorMembershipId.value = null
+      await session.loadTransferCandidates().catch(() => {
+        ownershipError.value = 'ownership.loadError'
+      })
+    } else ownershipError.value = 'ownership.transferError'
+  } finally {
+    loading.value = false
+  }
+}
+
 const copyInvite = async () => {
   if (!session.invite) return
   try {
@@ -298,8 +398,10 @@ const copyInvite = async () => {
 onMounted(async () => {
   try {
     await session.loadParty()
+    if (session.party?.isOwner) await session.loadTransferCandidates()
   } catch {
-    actionError.value = 'party.loadError'
+    if (session.party?.isOwner) ownershipError.value = 'ownership.loadError'
+    else actionError.value = 'party.loadError'
   } finally {
     loadingParty.value = false
   }

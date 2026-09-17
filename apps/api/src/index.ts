@@ -9,7 +9,14 @@ import { bodyLimit } from 'hono/body-limit'
 import { manageAvatar, validateAvatar, type ManageAvatar } from './avatars.ts'
 import { openDatabase } from './db/index.ts'
 import { ApiErrorCode } from './error-codes.ts'
-import { leaveParty, type LeaveParty } from './memberships.ts'
+import {
+  findTransferCandidates,
+  leaveParty,
+  transferParty,
+  type FindTransferCandidates,
+  type LeaveParty,
+  type TransferParty,
+} from './memberships.ts'
 import { findScene } from './scene.ts'
 
 import {
@@ -108,8 +115,10 @@ type Dependencies = {
   findOrCreateUser: FindOrCreateUser
   findInvitePreview: FindInvitePreview
   joinParty: JoinParty
+  findTransferCandidates: FindTransferCandidates
   leaveParty: LeaveParty
   manageInvite: ManageInvite
+  transferParty: TransferParty
   updateUserLocale: UpdateUserLocale
 }
 
@@ -131,6 +140,12 @@ const partyRequestSchema = z.object({
 const membershipRequestSchema = z.object({
   inviteToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   nickname: z.string().trim().min(1).max(40),
+}).strict()
+
+const transferRequestSchema = z.object({
+  successorMembershipId: z.string().regex(/^[1-9]\d{0,18}$/).refine(
+    (value) => BigInt(value) <= 9_223_372_036_854_775_807n,
+  ),
 }).strict()
 
 const userFields = {
@@ -557,10 +572,12 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
   const getInvitePreview = dependencies.findInvitePreview ?? findInvitePreview
   const getCurrentParty = dependencies.findCurrentParty ?? findCurrentParty
   const getUser = dependencies.findOrCreateUser ?? findOrCreateUser
+  const getTransferCandidates = dependencies.findTransferCandidates ?? findTransferCandidates
   const joinCurrentParty = dependencies.joinParty ?? joinParty
   const leaveCurrentParty = dependencies.leaveParty ?? leaveParty
   const updateInvite = dependencies.manageInvite ?? manageInvite
   const setUserLocale = dependencies.updateUserLocale ?? updateUserLocale
+  const transferCurrentParty = dependencies.transferParty ?? transferParty
   const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
   const authenticate: MiddlewareHandler<{ Bindings: Bindings; Variables: Variables }> = async (
@@ -619,7 +636,7 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     cors({
       origin: context.env.CLIENT_ORIGIN,
       allowHeaders: ['Authorization', 'Content-Type'],
-      allowMethods: ['GET', 'PUT', 'POST', 'DELETE', 'OPTIONS'],
+      allowMethods: ['GET', 'PUT', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
       exposeHeaders: ['Date'],
       maxAge: 600,
     })(context, next),
@@ -790,6 +807,46 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
       return context.body(null, 204)
     } catch {
       return context.json({ error: ApiErrorCode.MEMBERSHIP_DELETE_FAILED }, 500)
+    }
+  })
+
+  app.get('/parties/current/transfer-candidates', async (context) => {
+    try {
+      const result = await getTransferCandidates(context.env, context.get('authUserId'))
+      if (result.status === 'owner_required') {
+        return context.json({ error: ApiErrorCode.PARTY_OWNER_REQUIRED }, 403)
+      }
+      return context.json({
+        members: result.members.map((member) => ({
+          membershipId: member.membershipId.toString(),
+          nickname: member.nickname,
+        })),
+      })
+    } catch {
+      return context.json({ error: ApiErrorCode.PARTY_LOAD_FAILED }, 500)
+    }
+  })
+
+  app.patch('/parties/current/owner', async (context) => {
+    const body = await context.req.json().catch(() => undefined)
+    const input = transferRequestSchema.safeParse(body)
+    if (!input.success) return context.json({ error: ApiErrorCode.INVALID_REQUEST }, 400)
+
+    try {
+      const result = await transferCurrentParty(
+        context.env,
+        context.get('authUserId'),
+        BigInt(input.data.successorMembershipId),
+      )
+      if (result.status === 'owner_required') {
+        return context.json({ error: ApiErrorCode.PARTY_OWNER_REQUIRED }, 403)
+      }
+      if (result.status === 'successor_not_available') {
+        return context.json({ error: ApiErrorCode.PARTY_SUCCESSOR_NOT_AVAILABLE }, 404)
+      }
+      return context.body(null, 204)
+    } catch {
+      return context.json({ error: ApiErrorCode.PARTY_TRANSFER_FAILED }, 500)
     }
   })
 
