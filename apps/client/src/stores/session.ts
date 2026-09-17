@@ -19,6 +19,7 @@ export type PartyJoinError = typeof AppErrorCode.ALREADY_IN_PARTY | typeof AppEr
 export type PartyLeaveError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_LEAVE_CLEANUP_PENDING | typeof AppErrorCode.PARTY_LEAVE_FAILED
 export type PartyDeleteError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_TRANSFER_REQUIRED | typeof AppErrorCode.PARTY_DELETE_RETRY | typeof AppErrorCode.PARTY_DELETE_FAILED
 export type PartyTransferError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_SUCCESSOR_NOT_AVAILABLE | typeof AppErrorCode.PARTY_TRANSFER_FAILED
+export type AccountDeleteError = typeof AppErrorCode.ACCOUNT_DELETE_FAILED | typeof AppErrorCode.ACCOUNT_DELETE_RETRY | typeof AppErrorCode.PARTY_TRANSFER_REQUIRED | typeof AppErrorCode.RECENT_AUTH_REQUIRED
 
 export const emailSchema = z.string().trim().toLowerCase().pipe(z.email())
 export const emailCodeSchema = z.string().regex(/^\d{6}$/)
@@ -83,6 +84,7 @@ export const useSessionStore = defineStore('session', () => {
   const invitePreview = ref<z.infer<typeof invitePreviewResponseSchema>['party'] | null>(null)
   const pendingInviteToken = ref<string | null>(null)
   const transferCandidates = ref<z.infer<typeof transferCandidatesResponseSchema>['members']>([])
+  const accountDeletionPending = ref(false)
   const initialized = ref(false)
   const error = ref<SessionError | null>(null)
   const pendingEmail = ref<string | null>(null)
@@ -101,6 +103,7 @@ export const useSessionStore = defineStore('session', () => {
     invite.value = null
     invitePreview.value = null
     transferCandidates.value = []
+    accountDeletionPending.value = false
     error.value = null
   }
 
@@ -328,6 +331,29 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  const deleteAccount = async () => {
+    const response = await request('/users/me', { method: 'DELETE' })
+    if (response.ok) {
+      await signOut()
+      return
+    }
+    if (response.status === 503) {
+      party.value = null
+      invite.value = null
+      invitePreview.value = null
+      transferCandidates.value = []
+      accountDeletionPending.value = true
+    }
+    const code: AccountDeleteError = response.status === 403
+      ? AppErrorCode.RECENT_AUTH_REQUIRED
+      : response.status === 409
+        ? AppErrorCode.PARTY_TRANSFER_REQUIRED
+        : response.status === 503
+          ? AppErrorCode.ACCOUNT_DELETE_RETRY
+          : AppErrorCode.ACCOUNT_DELETE_FAILED
+    throw new Error(code)
+  }
+
   const retainInvite = (value: string) => {
     const token = inviteTokenSchema.parse(value)
     pendingInviteToken.value = token
@@ -382,6 +408,7 @@ export const useSessionStore = defineStore('session', () => {
     invitePreview,
     pendingInviteToken,
     transferCandidates,
+    accountDeletionPending,
     initialized,
     error,
     pendingEmail,
@@ -402,6 +429,7 @@ export const useSessionStore = defineStore('session', () => {
     loadTransferCandidates,
     transferOwnership,
     deleteParty,
+    deleteAccount,
     retainInvite,
     clearPendingInvite,
     loadInvitePreview,

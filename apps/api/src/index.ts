@@ -6,6 +6,7 @@ import { verifyWithJwks } from 'hono/jwt'
 import { z } from 'zod'
 import { bodyLimit } from 'hono/body-limit'
 
+import { deleteAccount, type DeleteAccount } from './accounts.ts'
 import { manageAvatar, validateAvatar, type ManageAvatar } from './avatars.ts'
 import { openDatabase } from './db/index.ts'
 import { ApiErrorCode } from './error-codes.ts'
@@ -36,10 +37,12 @@ type Bindings = {
   HYPERDRIVE: Hyperdrive
   AVATARS: R2Bucket
   SUPABASE_JWKS_URL?: string
+  SUPABASE_SERVICE_ROLE_KEY: string
   SUPABASE_URL: string
 }
 
 type Variables = {
+  authenticatedAt: number
   authUserId: string
 }
 
@@ -110,6 +113,7 @@ type JoinParty = (
 ) => Promise<JoinPartyResult>
 
 type Dependencies = {
+  deleteAccount: DeleteAccount
   findScene: typeof findScene
   manageAvatar: ManageAvatar
   createParty: CreateParty
@@ -127,8 +131,10 @@ type Dependencies = {
 
 const claimsSchema = z.object({
   sub: z.uuid(),
+  iat: z.number().int(),
   exp: z.number().int(),
   role: z.literal('authenticated'),
+  amr: z.array(z.object({ method: z.string(), timestamp: z.number().int() })).optional().default([]),
 })
 
 const localeRequestSchema = z.object({
@@ -197,6 +203,9 @@ const findOrCreateUser: FindOrCreateUser = async (bindings, authUserId) => {
       .limit(1)
 
     return existing
+  } catch (error) {
+    if (postgresErrorCode(error) === '23503') return undefined
+    throw error
   } finally {
     await client.end()
   }
@@ -570,6 +579,7 @@ const serializeParty = ({ party, membership, isOwner, inviteActive }: PartyMembe
 })
 
 export const createApp = (dependencies: Partial<Dependencies> = {}) => {
+  const deleteCurrentAccount = dependencies.deleteAccount ?? deleteAccount
   const avatarOperation = dependencies.manageAvatar ?? manageAvatar
   const addParty = dependencies.createParty ?? createParty
   const deleteCurrentParty = dependencies.deleteParty ?? deleteParty
@@ -608,7 +618,9 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
         },
       }, { cf: { cacheEverything: true, cacheTtl: 600 } })
 
-      context.set('authUserId', claimsSchema.parse(claims).sub)
+      const verifiedClaims = claimsSchema.parse(claims)
+      context.set('authUserId', verifiedClaims.sub)
+      context.set('authenticatedAt', Math.max(0, ...verifiedClaims.amr.map(({ timestamp }) => timestamp)))
     } catch {
       return unauthorized()
     }
@@ -622,7 +634,7 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     cors({
       origin: context.env.CLIENT_ORIGIN,
       allowHeaders: ['Authorization', 'Content-Type'],
-      allowMethods: ['PUT', 'PATCH', 'OPTIONS'],
+      allowMethods: ['PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       maxAge: 600,
     })(context, next),
   )
@@ -741,6 +753,28 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     if (!user) return unauthorized()
 
     return context.json(serializeUser(user))
+  })
+
+  app.delete('/users/me', async (context) => {
+    try {
+      const result = await deleteCurrentAccount(
+        context.env,
+        context.get('authUserId'),
+        context.get('authenticatedAt'),
+      )
+      if (result.status === 'recent_auth_required') {
+        return context.json({ error: ApiErrorCode.RECENT_AUTH_REQUIRED }, 403)
+      }
+      if (result.status === 'transfer_required') {
+        return context.json({ error: ApiErrorCode.PARTY_TRANSFER_REQUIRED }, 409)
+      }
+      if (result.status === 'cleanup_pending') {
+        return context.json({ error: ApiErrorCode.ACCOUNT_DELETE_RETRY }, 503)
+      }
+      return context.body(null, 204)
+    } catch {
+      return context.json({ error: ApiErrorCode.ACCOUNT_DELETE_FAILED }, 500)
+    }
   })
 
   app.post('/parties', async (context) => {

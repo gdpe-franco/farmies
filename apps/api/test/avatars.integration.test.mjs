@@ -113,7 +113,8 @@ test('private avatar persistence', { skip: !adminUrl || !runtimeUrl }, async (su
       const encode = (value) => Buffer.from(JSON.stringify(value)).toString('base64url')
       const unsigned = `${encode({ alg: 'ES256', kid: 'avatar-runtime' })}.${encode({
         sub: authIds[0], role: 'authenticated', aud: 'authenticated',
-        iss: 'https://example.supabase.co/auth/v1', exp: Math.floor(Date.now() / 1000) + 300,
+        iss: 'https://example.supabase.co/auth/v1', iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 300,
       })}`
       const signature = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, keys.privateKey, new TextEncoder().encode(unsigned))
       const headers = { Authorization: `Bearer ${unsigned}.${Buffer.from(signature).toString('base64url')}`, 'Content-Type': 'image/webp' }

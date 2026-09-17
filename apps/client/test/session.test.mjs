@@ -105,6 +105,7 @@ const createFetcher = (
   transferCandidatesStatus = 200,
   transferStatus = 204,
   deletePartyStatus = 204,
+  deleteAccountStatus = 204,
 ) => {
   const requests = []
   const fetcher = async (input, init) => {
@@ -114,6 +115,19 @@ const createFetcher = (
       return leaveStatus === 204
         ? new Response(null, { status: 204 })
         : Response.json({ error: leaveStatus === 403 ? 'PARTY_OWNER_REQUIRED' : leaveStatus === 503 ? 'MEMBERSHIP_DELETE_RETRY' : 'MEMBERSHIP_DELETE_FAILED' }, { status: leaveStatus })
+    }
+    if (url.endsWith('/users/me') && init.method === 'DELETE') {
+      return deleteAccountStatus === 204
+        ? new Response(null, { status: 204 })
+        : Response.json({
+            error: deleteAccountStatus === 403
+              ? 'RECENT_AUTH_REQUIRED'
+              : deleteAccountStatus === 409
+                ? 'PARTY_TRANSFER_REQUIRED'
+                : deleteAccountStatus === 503
+                  ? 'ACCOUNT_DELETE_RETRY'
+                  : 'ACCOUNT_DELETE_FAILED',
+          }, { status: deleteAccountStatus })
     }
     if (url.endsWith('/parties/current/transfer-candidates')) {
       return transferCandidatesStatus === 200
@@ -885,6 +899,36 @@ test('Party deletion', async (suite) => {
       const request = api.requests.at(-1)
       assert.equal(request.url, 'https://api.farmies.test/parties/current')
       assert.equal(request.init.method, 'DELETE')
+    })
+  }
+})
+
+test('account deletion', async (suite) => {
+  for (const testCase of [
+    { name: 'deletes and signs out locally', status: 204, error: null, pending: false, signedOut: true, keepsParty: false },
+    { name: 'keeps only cleanup access for a retry', status: 503, error: /ACCOUNT_DELETE_RETRY/, pending: true, signedOut: false, keepsParty: false },
+    { name: 'requires recent authentication', status: 403, error: /RECENT_AUTH_REQUIRED/, pending: false, signedOut: false, keepsParty: true },
+    { name: 'requires ownership transfer', status: 409, error: /PARTY_TRANSFER_REQUIRED/, pending: false, signedOut: false, keepsParty: true },
+    { name: 'keeps state on deletion failure', status: 500, error: /ACCOUNT_DELETE_FAILED/, pending: false, signedOut: false, keepsParty: true },
+  ]) {
+    await suite.test(testCase.name, async () => {
+      setActivePinia(createPinia())
+      const auth = createAuth({ session: { access_token: 'valid-token' } })
+      const api = createFetcher(200, 201, 200, 201, 200, 201, 204, 200, 204, 204, testCase.status)
+      const store = useSessionStore()
+      await store.initialize(auth.client, 'https://api.farmies.test', api.fetcher)
+      await store.loadParty()
+
+      if (testCase.error) await assert.rejects(store.deleteAccount(), testCase.error)
+      else await store.deleteAccount()
+
+      assert.equal(store.accountDeletionPending, testCase.pending)
+      assert.equal(store.party !== null, testCase.keepsParty)
+      assert.equal(store.accessToken === null, testCase.signedOut)
+      assert.equal(auth.signOutCalls.length, testCase.signedOut ? 1 : 0)
+      const deletion = api.requests.find(({ url, init }) => url.endsWith('/users/me') && init.method === 'DELETE')
+      assert.ok(deletion)
+      assert.equal(new Headers(deletion.init.headers).get('Authorization'), 'Bearer valid-token')
     })
   }
 })

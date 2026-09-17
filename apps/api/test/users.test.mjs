@@ -18,6 +18,7 @@ const createToken = async (privateKey, overrides = {}) => {
     aud: 'authenticated',
     role: 'authenticated',
     iat: Math.floor(Date.now() / 1000),
+    amr: [{ method: 'otp', timestamp: Math.floor(Date.now() / 1000) }],
     exp: Math.floor(Date.now() / 1000) + 60,
     ...overrides,
   })
@@ -47,6 +48,7 @@ test('authorized API endpoints', async (suite) => {
   const requestedIds = []
   const localeUpdates = []
   const partyRequests = []
+  const accountDeleteRequests = []
   const deletePartyRequests = []
   const inviteRequests = []
   const invitePreviewRequests = []
@@ -82,6 +84,7 @@ test('authorized API endpoints', async (suite) => {
   }
   let leaveResult = { status: 'left' }
   let deletePartyResult = { status: 'deleted' }
+  let deleteAccountResult = { status: 'deleted' }
   let transferCandidatesResult = {
     status: 'found',
     members: [{ membershipId: 86n, nickname: 'Moss' }],
@@ -114,6 +117,11 @@ test('authorized API endpoints', async (suite) => {
       deletePartyRequests.push(id)
       if (deletePartyResult instanceof Error) throw deletePartyResult
       return deletePartyResult
+    },
+    deleteAccount: async (_bindings, id, authenticatedAt) => {
+      accountDeleteRequests.push({ id, authenticatedAt })
+      if (deleteAccountResult instanceof Error) throw deleteAccountResult
+      return deleteAccountResult
     },
     findCurrentParty: async () => {
       if (currentPartyResult instanceof Error) throw currentPartyResult
@@ -241,6 +249,7 @@ test('authorized API endpoints', async (suite) => {
     { name: 'rejects the wrong audience', authorization: `Bearer ${await createToken(keys.privateKey, { aud: 'anon' })}`, method: 'PUT', status: 401 },
     { name: 'rejects an expired token', authorization: `Bearer ${await createToken(keys.privateKey, { exp: 1 })}`, method: 'PUT', status: 401 },
     { name: 'rejects a missing expiry', authorization: `Bearer ${await createToken(keys.privateKey, { exp: undefined })}`, method: 'PUT', status: 401 },
+    { name: 'rejects a missing issued-at time', authorization: `Bearer ${await createToken(keys.privateKey, { iat: undefined })}`, method: 'PUT', status: 401 },
     { name: 'rejects the wrong role', authorization: `Bearer ${await createToken(keys.privateKey, { role: 'anon' })}`, method: 'PUT', status: 401 },
     { name: 'rejects an invalid subject', authorization: `Bearer ${await createToken(keys.privateKey, { sub: 'not-a-uuid' })}`, method: 'PUT', status: 401 },
     { name: 'rejects an invalid signature', authorization: `Bearer ${tamperedToken}`, method: 'PUT', status: 401 },
@@ -745,6 +754,40 @@ test('authorized API endpoints', async (suite) => {
       })
     }
     assert.deepEqual(deletePartyRequests, Array(6).fill(authUserId))
+  })
+
+  await suite.test('deleting an account', async (deleteTests) => {
+    const issuedAt = Math.floor(Date.now() / 1_000)
+    const recentToken = await createToken(keys.privateKey, {
+      iat: issuedAt,
+      amr: [{ method: 'otp', timestamp: issuedAt }],
+    })
+    for (const testCase of [
+      { name: 'deletes with recent authentication', result: { status: 'deleted' }, status: 204, error: null },
+      { name: 'requires recent authentication', result: { status: 'recent_auth_required' }, status: 403, error: 'RECENT_AUTH_REQUIRED' },
+      { name: 'requires ownership transfer', result: { status: 'transfer_required' }, status: 409, error: 'PARTY_TRANSFER_REQUIRED' },
+      { name: 'makes external cleanup retryable', result: { status: 'cleanup_pending' }, status: 503, error: 'ACCOUNT_DELETE_RETRY' },
+      { name: 'returns a stable deletion failure', result: new Error('database unavailable'), status: 500, error: 'ACCOUNT_DELETE_FAILED' },
+    ]) {
+      await deleteTests.test(testCase.name, async () => {
+        deleteAccountResult = testCase.result
+        const response = await app.request('/users/me', {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${recentToken}`, Origin: bindings.CLIENT_ORIGIN },
+        }, bindings)
+        assert.equal(response.status, testCase.status)
+        assert.equal(response.headers.get('Access-Control-Allow-Origin'), bindings.CLIENT_ORIGIN)
+        if (testCase.error) assert.deepEqual(await response.json(), { error: testCase.error })
+      })
+    }
+    assert.deepEqual(accountDeleteRequests, Array(5).fill({ id: authUserId, authenticatedAt: issuedAt }))
+
+    const deletedUserApp = createApp({ findOrCreateUser: async () => undefined })
+    const reusedSession = await deletedUserApp.request('/users/me', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${recentToken}` },
+    }, bindings)
+    assert.equal(reusedSession.status, 401)
   })
 })
 

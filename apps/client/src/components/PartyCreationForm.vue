@@ -227,7 +227,7 @@
       </template>
 
       <q-form
-        v-else
+        v-else-if="!session.accountDeletionPending"
         class="q-gutter-md"
         @submit="createParty"
       >
@@ -285,6 +285,51 @@
         />
       </q-form>
 
+      <section class="farmies-panel q-mt-md">
+        <h2 class="text-h6 q-mb-sm">
+          {{ t(session.accountDeletionPending ? 'account.cleanupTitle' : 'account.title') }}
+        </h2>
+        <p>{{ t(session.accountDeletionPending ? 'account.cleanupDescription' : 'account.description') }}</p>
+        <q-banner
+          v-if="accountError"
+          class="bg-negative text-white q-mb-md"
+          role="alert"
+        >
+          {{ t(accountError) }}
+        </q-banner>
+        <q-btn
+          outline
+          color="negative"
+          :label="t(session.accountDeletionPending ? 'account.retry' : 'account.delete')"
+          :loading="loading"
+          @click="requestAccountDeletion"
+        />
+      </section>
+
+      <q-dialog v-model="accountDialog">
+        <q-card class="farmies-card">
+          <q-card-section>
+            <h3 class="text-h6 q-my-sm">
+              {{ t('confirmation.deleteAccount') }}
+            </h3>
+            <p>{{ t('account.confirm') }}</p>
+          </q-card-section>
+          <q-card-actions align="right">
+            <q-btn
+              v-close-popup
+              flat
+              :label="t('account.cancel')"
+            />
+            <q-btn
+              color="negative"
+              :label="t('account.delete')"
+              :loading="loading"
+              @click="deleteAccount"
+            />
+          </q-card-actions>
+        </q-card>
+      </q-dialog>
+
       <q-btn
         v-if="!session.party"
         flat
@@ -317,6 +362,7 @@ const loadingParty = ref(true)
 const leaveDialog = ref(false)
 const ownershipDialog = ref(false)
 const deleteDialog = ref(false)
+const accountDialog = ref(false)
 const successorMembershipId = ref<string | null>(null)
 const ownershipError = ref<
   'ownership.loadError' | 'ownership.staleError' | 'ownership.transferError' | 'ownership.transferRequired'
@@ -325,6 +371,9 @@ const ownershipError = ref<
 const actionError = ref<
   'party.alreadyMember' | 'party.createError' | 'party.loadError' | 'party.leaveError' | 'party.leaveCleanupError'
   | 'ownership.deleteCleanupError' | null
+>(null)
+const accountError = ref<
+  'account.cleanupError' | 'account.deleteError' | 'account.recentAuthError' | 'account.transferRequired' | null
 >(null)
 const inviteMessage = ref<{
   error: boolean
@@ -450,6 +499,34 @@ const deleteParty = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const deleteAccount = async () => {
+  loading.value = true
+  accountError.value = null
+  try {
+    await session.deleteAccount()
+    accountDialog.value = false
+  } catch (error) {
+    accountDialog.value = false
+    if (error instanceof Error && error.message === AppErrorCode.ACCOUNT_DELETE_RETRY) {
+      accountError.value = 'account.cleanupError'
+    } else if (error instanceof Error && error.message === AppErrorCode.RECENT_AUTH_REQUIRED) {
+      accountError.value = 'account.recentAuthError'
+    } else if (error instanceof Error && error.message === AppErrorCode.PARTY_TRANSFER_REQUIRED) {
+      accountError.value = 'account.transferRequired'
+      await session.loadTransferCandidates().catch(() => {
+        ownershipError.value = 'ownership.loadError'
+      })
+    } else accountError.value = 'account.deleteError'
+  } finally {
+    loading.value = false
+  }
+}
+
+const requestAccountDeletion = () => {
+  if (session.accountDeletionPending) void deleteAccount()
+  else accountDialog.value = true
 }
 
 const copyInvite = async () => {
