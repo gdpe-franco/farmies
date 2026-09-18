@@ -107,7 +107,7 @@ export const parties = farmies.table(
       sql`${table.displayName} = btrim(${table.displayName}) and char_length(${table.displayName}) between 1 and 60`,
     ),
     check('parties_deleted_at_check', sql`${table.deletedAt} is null or ${table.deletedAt} >= ${table.createdAt}`),
-    uniqueIndex('parties_active_owner_uidx').on(table.ownerUserId).where(sql`${table.deletedAt} is null`),
+    index('parties_active_owner_idx').on(table.ownerUserId).where(sql`${table.deletedAt} is null`),
   ],
 )
 
@@ -131,7 +131,10 @@ export const memberships = farmies.table(
       sql`${table.nickname} = btrim(${table.nickname}) and char_length(${table.nickname}) between 1 and 40`,
     ),
     check('memberships_deleted_at_check', sql`${table.deletedAt} is null or ${table.deletedAt} >= ${table.joinedAt}`),
-    uniqueIndex('memberships_active_user_uidx').on(table.userId).where(sql`${table.deletedAt} is null`),
+    index('memberships_active_user_idx').on(table.userId).where(sql`${table.deletedAt} is null`),
+    uniqueIndex('memberships_active_party_user_uidx')
+      .on(table.partyId, table.userId)
+      .where(sql`${table.deletedAt} is null`),
     index('memberships_active_party_joined_idx')
       .on(table.partyId, table.joinedAt, table.id)
       .where(sql`${table.deletedAt} is null`),

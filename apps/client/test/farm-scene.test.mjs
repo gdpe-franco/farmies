@@ -20,12 +20,11 @@ test('ambient activities happy path: stable buckets and all five compatible cow 
     }
   }
 })
-test('scene contract failure path: unsupported definitions and over-capacity rosters fail', () => {
+test('scene contract failure path: unsupported definitions fail', () => {
   const scene = { party: { id: '84', species: 'COW', environment: { code: 'PASTURE', definition: {
     version: 1, scene: 'PASTURE', zones: [], props: [], capabilities: [],
   } } }, members: [member] }
   assert.equal(sceneSchema.safeParse(scene).success, true)
-  assert.equal(sceneSchema.safeParse({ ...scene, members: Array(11).fill(member) }).success, false)
   scene.party.environment.definition.version = 2
   assert.equal(sceneSchema.safeParse(scene).success, false)
 })

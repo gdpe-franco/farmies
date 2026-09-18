@@ -9,7 +9,7 @@ export const sceneSchema = z.object({
   }),
   members: z.array(z.object({ membershipId: z.string().regex(/^\d+$/), nickname: z.string().min(1).max(40),
     joinedAt: z.iso.datetime(), avatarVersion: z.number().int().positive().nullable(),
-  })).min(1).max(10),
+  })).min(1),
 })
 export type SceneData = z.infer<typeof sceneSchema>
 export const activities = ['idle', 'walking', 'grazing', 'eating', 'sleeping'] as const

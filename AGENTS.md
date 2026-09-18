@@ -2,9 +2,9 @@
 
 ## Authority and scope
 
-Read `.planning/mvp.md` and `.planning/mvp-data-model.md` before product work; keep their PlantUML diagrams synchronized. `.planning/mvp.md` is the single implementation plan and progress tracker. Planning artifacts are local and gitignored.
+Read `.planning/mvp.md`, `.planning/mvp-2.md`, and `.planning/mvp-data-model.md` before product work; keep applicable PlantUML diagrams synchronized. `.planning/mvp.md` is the completed first-slice record; `.planning/mvp-2.md` is the active implementation plan and progress tracker after its approval. Planning artifacts are local and gitignored.
 
-Farmies is a private friend-group app. The MVP is one Party of at most 10 members, `COW` + `PASTURE`, responsive web first, and Capacitor Android second. English and Spanish are required. Deferred features include iOS packaging, other species/environments, chat, presence, realtime interactions, public profiles, social login, and monetization.
+Farmies is a private friend-group app. The active second MVP supports at most three active memberships and one owned Party while retaining at most 10 members per Party, `COW` + `PASTURE`, responsive web first, and Capacitor Android second. English and Spanish are required. Deferred features include iOS packaging, other species/environments, chat, presence, realtime delivery, public profiles, social login, and monetization.
 
 ## Architecture
 
@@ -24,15 +24,15 @@ Use one Git history with npm workspaces at `apps/client` and `apps/api`. Dockeri
 - Authorize every Party-scoped operation by active membership and validate all API input.
 - Keep secrets and local environment values out of source, output, and documentation.
 - Email is private. Users have an internal global ID; `memberships.nickname` is the only displayed person-name and is non-unique.
-- A user has at most one active membership. Party creation, capacity-safe joining, and ownership transfer are atomic.
+- A user may hold at most three active memberships and own at most one active Party. Create, join, and transfer enforce those limits atomically; leave and deletion free their slots immediately.
 - `member_avatars` belong to memberships. Leaving or Party deletion removes their metadata and R2 object.
 - Return PostgreSQL `bigint` IDs as strings. Exclude soft-deleted rows explicitly.
 - Persist meaningful state only; derive ambient animation state without continuous server writes.
 
 ## Workflow
 
-- Planning does not authorize implementation. Follow the next story in `.planning/mvp.md` and implement one independently verifiable story per request.
-- Record story status only in `.planning/mvp.md`; do not maintain parallel PRDs, story lists, or progress trackers.
+- Planning does not authorize implementation. Follow the next story in the active approved MVP plan and implement one independently verifiable story per request.
+- Record story status only in the active MVP plan; do not maintain additional parallel story lists or progress trackers.
 - Prefer the smallest working change; do not scaffold deferred features or speculative abstractions.
 - Prefer one named happy-path and one failure-path test per behavior; use table rows only for materially distinct branches.
 - Add proportionate checks and run relevant typecheck, lint, test, and build commands before completion.

@@ -5,6 +5,7 @@ import test from 'node:test'
 import postgres from 'postgres'
 
 import { joinParty } from '../src/index.ts'
+import { leaveParty } from '../src/memberships.ts'
 
 if (existsSync(new URL('../.env', import.meta.url))) process.loadEnvFile(new URL('../.env', import.meta.url))
 
@@ -14,7 +15,7 @@ const authIds = Array.from(
   { length: 14 },
   (_, index) => `00000000-0000-4000-8000-${String(1000 + index).padStart(12, '0')}`,
 )
-const hashes = ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)]
+const hashes = ['a', 'b', 'c', 'd', 'e', 'f', '0'].map((value) => value.repeat(64))
 
 test('Party joining transaction', { skip: !adminUrl || !runtimeUrl }, async (suite) => {
   const admin = postgres(adminUrl, { max: 1 })
@@ -46,7 +47,8 @@ test('Party joining transaction', { skip: !adminUrl || !runtimeUrl }, async (sui
         select species_id, environment_id from farmies.species_environments limit 1
       `
       const parties = []
-      for (const [index, owner] of [users[0], users[11], users[12]].entries()) {
+      const owners = [users[0], users[11], users[12], users[11], users[12], users[11], users[12]]
+      for (const [index, owner] of owners.entries()) {
         const [party] = await sql`
           insert into farmies.parties (owner_user_id, display_name, species_id, environment_id)
           values (${owner.id}, ${`Transactional Party ${index + 1}`}, ${speciesId}, ${environmentId})
@@ -91,18 +93,42 @@ test('Party joining transaction', { skip: !adminUrl || !runtimeUrl }, async (sui
         joinParty(bindings, authIds[13], { inviteTokenHash: hashes[1], nickname: 'Racer' }),
         joinParty(bindings, authIds[13], { inviteTokenHash: hashes[2], nickname: 'Racer' }),
       ])
-      assert.deepEqual(raceResults.map(({ status }) => status).sort(), ['already_member', 'joined'])
+      assert.deepEqual(raceResults.map(({ status }) => status).sort(), ['joined', 'joined'])
       const [{ count: racerCount }] = await admin`
         select count(*)::integer from farmies.memberships
         where user_id = ${fixture.users[13].id} and deleted_at is null
       `
-      assert.equal(racerCount, 1)
+      assert.equal(racerCount, 2)
+
+      for (const hash of hashes.slice(1, 2)) {
+        assert.equal((await joinParty(bindings, authIds[1], {
+          inviteTokenHash: hash,
+          nickname: 'Multi Party Friend',
+        })).status, 'joined')
+      }
+      const limitRace = await Promise.all([
+        joinParty(bindings, authIds[1], { inviteTokenHash: hashes[2], nickname: 'Boundary A' }),
+        joinParty(bindings, authIds[1], { inviteTokenHash: hashes[3], nickname: 'Boundary B' }),
+      ])
+      assert.deepEqual(limitRace.map(({ status }) => status).sort(), ['joined', 'membership_limit'])
+      const [{ count: limitedCount }] = await admin`
+        select count(*)::integer from farmies.memberships
+        where user_id = ${fixture.users[1].id} and deleted_at is null
+      `
+      assert.equal(limitedCount, 3)
+
+      assert.deepEqual(await leaveParty({ ...bindings, AVATARS: { delete: async () => undefined } }, authIds[1]), {
+        status: 'left',
+      })
+      assert.equal((await joinParty(bindings, authIds[1], {
+        inviteTokenHash: hashes[4],
+        nickname: 'Freed Slot',
+      })).status, 'joined')
     })
 
     await suite.test('failure path', async () => {
       const cases = [
-        { name: 'hides an unknown invite', authUserId: authIds[10], hash: 'd'.repeat(64), status: 'invite_not_available' },
-        { name: 'rejects a user already in another Party', authUserId: authIds[1], hash: hashes[1], status: 'already_member' },
+        { name: 'hides an unknown invite', authUserId: authIds[10], hash: '9'.repeat(64), status: 'invite_not_available' },
       ]
       for (const testCase of cases) {
         const result = await joinParty(bindings, testCase.authUserId, {

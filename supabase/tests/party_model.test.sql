@@ -70,17 +70,19 @@ select is(
     from pg_indexes
     where schemaname = 'farmies'
       and indexname in (
-        'parties_active_owner_uidx',
-        'memberships_active_user_uidx',
+        'parties_active_owner_idx',
+        'memberships_active_user_idx',
+        'memberships_active_party_user_uidx',
         'memberships_active_party_joined_idx'
       )
   ),
   array[
     'memberships_active_party_joined_idx',
-    'memberships_active_user_uidx',
-    'parties_active_owner_uidx'
+    'memberships_active_party_user_uidx',
+    'memberships_active_user_idx',
+    'parties_active_owner_idx'
   ]::name[],
-  'the three approved active-row indexes exist'
+  'the four approved active-row indexes exist'
 );
 
 select is(
@@ -88,11 +90,11 @@ select is(
     select count(*)::integer
     from pg_indexes
     where schemaname = 'farmies'
-      and indexname in ('parties_active_owner_uidx', 'memberships_active_user_uidx')
+      and indexname = 'memberships_active_party_user_uidx'
       and indexdef like '%UNIQUE%WHERE (deleted_at IS NULL)%'
   ),
-  2,
-  'active ownership and membership are uniquely enforced'
+  1,
+  'one active membership per user and Party is uniquely enforced'
 );
 
 select is(

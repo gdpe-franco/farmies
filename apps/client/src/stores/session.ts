@@ -14,11 +14,11 @@ type SessionError = typeof AppErrorCode.SESSION_RESTORE_FAILED | typeof AppError
 type InvitePreviewError = typeof AppErrorCode.INVITE_NOT_AVAILABLE | typeof AppErrorCode.INVITE_LOAD_FAILED
 type SessionStorage = Pick<Storage, 'getItem' | 'removeItem' | 'setItem'>
 
-export type PartyCreationError = typeof AppErrorCode.ALREADY_IN_PARTY | typeof AppErrorCode.PARTY_CREATION_FAILED
-export type PartyJoinError = typeof AppErrorCode.ALREADY_IN_PARTY | typeof AppErrorCode.INVITE_NOT_AVAILABLE | typeof AppErrorCode.PARTY_JOIN_FAILED
+export type PartyCreationError = typeof AppErrorCode.PARTY_MEMBERSHIP_LIMIT | typeof AppErrorCode.PARTY_OWNERSHIP_LIMIT | typeof AppErrorCode.PARTY_CREATION_FAILED
+export type PartyJoinError = typeof AppErrorCode.PARTY_MEMBERSHIP_LIMIT | typeof AppErrorCode.INVITE_NOT_AVAILABLE | typeof AppErrorCode.PARTY_JOIN_FAILED
 export type PartyLeaveError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_LEAVE_CLEANUP_PENDING | typeof AppErrorCode.PARTY_LEAVE_FAILED
 export type PartyDeleteError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_TRANSFER_REQUIRED | typeof AppErrorCode.PARTY_DELETE_RETRY | typeof AppErrorCode.PARTY_DELETE_FAILED
-export type PartyTransferError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_SUCCESSOR_NOT_AVAILABLE | typeof AppErrorCode.PARTY_TRANSFER_FAILED
+export type PartyTransferError = typeof AppErrorCode.PARTY_OWNER_REQUIRED | typeof AppErrorCode.PARTY_SUCCESSOR_NOT_AVAILABLE | typeof AppErrorCode.PARTY_SUCCESSOR_OWNERSHIP_LIMIT | typeof AppErrorCode.PARTY_TRANSFER_FAILED
 export type AccountDeleteError = typeof AppErrorCode.ACCOUNT_DELETE_FAILED | typeof AppErrorCode.ACCOUNT_DELETE_RETRY | typeof AppErrorCode.PARTY_TRANSFER_REQUIRED | typeof AppErrorCode.RECENT_AUTH_REQUIRED
 
 export const emailSchema = z.string().trim().toLowerCase().pipe(z.email())
@@ -58,9 +58,9 @@ const inviteResponseSchema = z.object({
 const invitePreviewResponseSchema = z.object({
   party: z.object({
     displayName: z.string(),
-    occupancy: z.number().int().min(0).max(9),
-    capacity: z.literal(10),
-  }),
+    occupancy: z.number().int().min(0),
+    capacity: z.number().int().positive(),
+  }).refine(({ occupancy, capacity }) => occupancy < capacity),
 })
 
 const transferCandidatesResponseSchema = z.object({
@@ -236,9 +236,12 @@ export const useSessionStore = defineStore('session', () => {
     })
 
     if (!response.ok) {
-      const code: PartyCreationError = response.status === 409
-        ? AppErrorCode.ALREADY_IN_PARTY
-        : AppErrorCode.PARTY_CREATION_FAILED
+      const error = z.object({ error: z.string() }).safeParse(await response.json())
+      const code: PartyCreationError = error.success && error.data.error === AppErrorCode.PARTY_MEMBERSHIP_LIMIT
+        ? AppErrorCode.PARTY_MEMBERSHIP_LIMIT
+        : error.success && error.data.error === AppErrorCode.PARTY_OWNERSHIP_LIMIT
+          ? AppErrorCode.PARTY_OWNERSHIP_LIMIT
+          : AppErrorCode.PARTY_CREATION_FAILED
       throw new Error(code)
     }
 
@@ -304,6 +307,8 @@ export const useSessionStore = defineStore('session', () => {
         ? AppErrorCode.PARTY_OWNER_REQUIRED
         : response.status === 404
           ? AppErrorCode.PARTY_SUCCESSOR_NOT_AVAILABLE
+          : response.status === 409
+            ? AppErrorCode.PARTY_SUCCESSOR_OWNERSHIP_LIMIT
           : AppErrorCode.PARTY_TRANSFER_FAILED
       throw new Error(code)
     }
@@ -391,7 +396,7 @@ export const useSessionStore = defineStore('session', () => {
       const code: PartyJoinError = response.status === 404
         ? AppErrorCode.INVITE_NOT_AVAILABLE
         : response.status === 409
-          ? AppErrorCode.ALREADY_IN_PARTY
+          ? AppErrorCode.PARTY_MEMBERSHIP_LIMIT
           : AppErrorCode.PARTY_JOIN_FAILED
       throw new Error(code)
     }

@@ -99,7 +99,8 @@ test('authorized API endpoints', async (suite) => {
   const app = createApp({
     createParty: async (_bindings, id, input) => {
       partyRequests.push({ id, input })
-      if (input.displayName === 'Existing Party') return { status: 'already_member' }
+      if (input.displayName === 'Membership Limit') return { status: 'membership_limit' }
+      if (input.displayName === 'Ownership Limit') return { status: 'ownership_limit' }
       if (input.displayName === 'Missing User') return { status: 'user_not_found' }
       if (input.displayName === 'Broken Party') throw new Error('database unavailable')
 
@@ -358,11 +359,18 @@ test('authorized API endpoints', async (suite) => {
       body: { error: 'INVALID_REQUEST' },
     },
     {
-      name: 'rejects a second active membership',
+      name: 'rejects a fourth active membership',
       authorization: `Bearer ${validToken}`,
-      requestBody: { displayName: 'Existing Party', nickname: 'Fern' },
+      requestBody: { displayName: 'Membership Limit', nickname: 'Fern' },
       status: 409,
-      body: { error: 'ALREADY_IN_PARTY' },
+      body: { error: 'PARTY_MEMBERSHIP_LIMIT' },
+    },
+    {
+      name: 'rejects a second active ownership',
+      authorization: `Bearer ${validToken}`,
+      requestBody: { displayName: 'Ownership Limit', nickname: 'Fern' },
+      status: 409,
+      body: { error: 'PARTY_OWNERSHIP_LIMIT' },
     },
     {
       name: 'rejects an authentication identity without an application user',
@@ -654,7 +662,7 @@ test('authorized API endpoints', async (suite) => {
     { name: 'rejects a malformed invite token', authorization: `Bearer ${validToken}`, body: { inviteToken: 'invalid', nickname: 'Fern' }, result: { status: 'joined' }, status: 400, error: 'INVALID_REQUEST' },
     { name: 'rejects an empty nickname', authorization: `Bearer ${validToken}`, body: { inviteToken: 'a'.repeat(43), nickname: '   ' }, result: { status: 'joined' }, status: 400, error: 'INVALID_REQUEST' },
     { name: 'hides invalid, expired, revoked, or full invites', authorization: `Bearer ${validToken}`, body: { inviteToken: 'a'.repeat(43), nickname: 'Fern' }, result: { status: 'invite_not_available' }, status: 404, error: 'INVITE_NOT_AVAILABLE' },
-    { name: 'rejects a user who already belongs to another Party', authorization: `Bearer ${validToken}`, body: { inviteToken: 'a'.repeat(43), nickname: 'Fern' }, result: { status: 'already_member' }, status: 409, error: 'ALREADY_IN_PARTY' },
+    { name: 'rejects a fourth active membership', authorization: `Bearer ${validToken}`, body: { inviteToken: 'a'.repeat(43), nickname: 'Fern' }, result: { status: 'membership_limit' }, status: 409, error: 'PARTY_MEMBERSHIP_LIMIT' },
   ]
 
   await suite.test('membership failure path', async (failurePath) => {
@@ -722,6 +730,7 @@ test('authorized API endpoints', async (suite) => {
       { name: 'rejects malformed membership IDs', body: { successorMembershipId: '0' }, result: { status: 'transferred' }, status: 400, error: 'INVALID_REQUEST' },
       { name: 'requires the current owner', body: { successorMembershipId: '86' }, result: { status: 'owner_required' }, status: 403, error: 'PARTY_OWNER_REQUIRED' },
       { name: 'rejects a stale or cross-Party successor', body: { successorMembershipId: '86' }, result: { status: 'successor_not_available' }, status: 404, error: 'PARTY_SUCCESSOR_NOT_AVAILABLE' },
+      { name: 'rejects a successor who owns a Party', body: { successorMembershipId: '86' }, result: { status: 'successor_ownership_limit' }, status: 409, error: 'PARTY_SUCCESSOR_OWNERSHIP_LIMIT' },
       { name: 'returns a stable transfer failure', body: { successorMembershipId: '86' }, result: new Error('database unavailable'), status: 500, error: 'PARTY_TRANSFER_FAILED' },
     ]) {
       await transferTests.test(testCase.name, async () => {
@@ -740,7 +749,7 @@ test('authorized API endpoints', async (suite) => {
       })
     }
     assert.deepEqual(transferCandidateRequests, [authUserId, authUserId])
-    assert.deepEqual(transferRequests.map(({ membershipId }) => membershipId), [86n, 86n, 86n, 86n])
+    assert.deepEqual(transferRequests.map(({ membershipId }) => membershipId), [86n, 86n, 86n, 86n, 86n])
   })
 
   await suite.test('deleting a sole-member Party', async (deleteTests) => {

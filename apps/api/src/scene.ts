@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { openDatabase } from './db/index.ts'
+import { PARTY_LIMITS } from './party-limits.ts'
 
 export const environmentDefinitionSchema = z.object({
   version: z.literal(1), scene: z.literal('PASTURE'),
@@ -29,7 +30,7 @@ export const findScene = async (bindings: Parameters<typeof openDatabase>[0], au
       left join farmies.member_avatars a on a.membership_id = m.id and a.deleted_at is null
       where requester.auth_user_id = ${authUserId} and requester.deleted_at is null
       order by m.joined_at, m.id
-      limit 10
+      limit ${PARTY_LIMITS.activeMembersPerParty}
     `)
     if (!rows.length) return undefined
     const first = rows[0]!

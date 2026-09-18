@@ -369,7 +369,7 @@ const ownershipError = ref<
   | 'ownership.deleteError' | null
 >(null)
 const actionError = ref<
-  'party.alreadyMember' | 'party.createError' | 'party.loadError' | 'party.leaveError' | 'party.leaveCleanupError'
+  'party.membershipLimit' | 'party.ownershipLimit' | 'party.createError' | 'party.loadError' | 'party.leaveError' | 'party.leaveCleanupError'
   | 'ownership.deleteCleanupError' | null
 >(null)
 const accountError = ref<
@@ -401,9 +401,11 @@ const createParty = async () => {
   try {
     await session.createParty(displayName.value, nickname.value)
   } catch (error) {
-    actionError.value = error instanceof Error && error.message === AppErrorCode.ALREADY_IN_PARTY
-      ? 'party.alreadyMember'
-      : 'party.createError'
+    actionError.value = error instanceof Error && error.message === AppErrorCode.PARTY_MEMBERSHIP_LIMIT
+      ? 'party.membershipLimit'
+      : error instanceof Error && error.message === AppErrorCode.PARTY_OWNERSHIP_LIMIT
+        ? 'party.ownershipLimit'
+        : 'party.createError'
   } finally {
     loading.value = false
   }

@@ -4,6 +4,7 @@ import { alias } from 'drizzle-orm/pg-core'
 
 import { openDatabase } from './db/index.ts'
 import { invites, memberAvatars, memberships, parties, users } from './db/schema.ts'
+import { PARTY_LIMITS } from './party-limits.ts'
 
 type LeavePartyResult = { status: 'left' | 'already_left' | 'owner_required' | 'cleanup_pending' }
 export type LeaveParty = (
@@ -15,7 +16,9 @@ type TransferCandidate = { membershipId: bigint; nickname: string }
 type TransferCandidatesResult =
   | { status: 'found'; members: TransferCandidate[] }
   | { status: 'owner_required' }
-type TransferPartyResult = { status: 'transferred' | 'owner_required' | 'successor_not_available' }
+type TransferPartyResult = {
+  status: 'transferred' | 'owner_required' | 'successor_not_available' | 'successor_ownership_limit'
+}
 export type FindTransferCandidates = (
   bindings: { HYPERDRIVE: Hyperdrive },
   authUserId: string,
@@ -120,6 +123,20 @@ export const transferParty: TransferParty = async (bindings, authUserId, success
         ))
         .limit(1)
       if (!successor) return { status: 'successor_not_available' }
+
+      const [lockedSuccessor] = await transaction
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.id, successor.userId), isNull(users.deletedAt)))
+        .for('update')
+      if (!lockedSuccessor) return { status: 'successor_not_available' }
+      const [{ ownedParties }] = await transaction
+        .select({ ownedParties: sql<number>`count(*)` })
+        .from(parties)
+        .where(and(eq(parties.ownerUserId, successor.userId), isNull(parties.deletedAt)))
+      if (Number(ownedParties) >= PARTY_LIMITS.ownedPartiesPerUser) {
+        return { status: 'successor_ownership_limit' }
+      }
 
       await transaction.update(parties)
         .set({ ownerUserId: successor.userId, updatedAt: sql`clock_timestamp()` })

@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { MiddlewareHandler } from 'hono'
 import { cors } from 'hono/cors'
@@ -10,6 +10,7 @@ import { deleteAccount, type DeleteAccount } from './accounts.ts'
 import { manageAvatar, validateAvatar, type ManageAvatar } from './avatars.ts'
 import { openDatabase } from './db/index.ts'
 import { ApiErrorCode } from './error-codes.ts'
+import { PARTY_LIMITS } from './party-limits.ts'
 import {
   deleteParty,
   findTransferCandidates,
@@ -72,7 +73,8 @@ type PartyMembership = {
 
 type CreatePartyResult =
   | { status: 'created'; value: PartyMembership }
-  | { status: 'already_member' }
+  | { status: 'membership_limit' }
+  | { status: 'ownership_limit' }
   | { status: 'user_not_found' }
 
 type FindOrCreateUser = (bindings: Bindings, authUserId: string) => Promise<ApplicationUser | undefined>
@@ -103,7 +105,7 @@ type FindInvitePreview = (
 ) => Promise<InvitePreview | undefined>
 type JoinPartyResult =
   | { status: 'joined' | 'already_joined'; value: PartyMembership }
-  | { status: 'already_member' }
+  | { status: 'membership_limit' }
   | { status: 'invite_not_available' }
   | { status: 'user_not_found' }
 type JoinParty = (
@@ -227,7 +229,7 @@ const updateUserLocale: UpdateUserLocale = async (bindings, authUserId, preferre
   }
 }
 
-const createParty: CreateParty = async (bindings, authUserId, input) => {
+export const createParty: CreateParty = async (bindings, authUserId, input) => {
   const { client, database } = openDatabase(bindings)
 
   try {
@@ -239,12 +241,26 @@ const createParty: CreateParty = async (bindings, authUserId, input) => {
         .limit(1)
       if (!user) return { status: 'user_not_found' }
 
-      const [activeMembership] = await transaction
-        .select({ id: memberships.id })
+      const [lockedUser] = await transaction
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.id, user.id), isNull(users.deletedAt)))
+        .for('update')
+      if (!lockedUser) return { status: 'user_not_found' }
+
+      const [{ activeMemberships }] = await transaction
+        .select({ activeMemberships: sql<number>`count(*)` })
         .from(memberships)
         .where(and(eq(memberships.userId, user.id), isNull(memberships.deletedAt)))
-        .limit(1)
-      if (activeMembership) return { status: 'already_member' }
+      if (Number(activeMemberships) >= PARTY_LIMITS.activeMembershipsPerUser) {
+        return { status: 'membership_limit' }
+      }
+
+      const [{ ownedParties }] = await transaction
+        .select({ ownedParties: sql<number>`count(*)` })
+        .from(parties)
+        .where(and(eq(parties.ownerUserId, user.id), isNull(parties.deletedAt)))
+      if (Number(ownedParties) >= PARTY_LIMITS.ownedPartiesPerUser) return { status: 'ownership_limit' }
 
       const [catalog] = await transaction
         .select({
@@ -268,6 +284,7 @@ const createParty: CreateParty = async (bindings, authUserId, input) => {
         .select({ id: parties.id, displayName: parties.displayName, createdAt: parties.createdAt })
         .from(parties)
         .where(and(eq(parties.ownerUserId, user.id), isNull(parties.deletedAt)))
+        .orderBy(desc(parties.id))
         .limit(1)
       if (!party) throw new Error('Party creation returned no row')
 
@@ -278,7 +295,11 @@ const createParty: CreateParty = async (bindings, authUserId, input) => {
       const [membership] = await transaction
         .select({ id: memberships.id, nickname: memberships.nickname, joinedAt: memberships.joinedAt })
         .from(memberships)
-        .where(and(eq(memberships.userId, user.id), isNull(memberships.deletedAt)))
+        .where(and(
+          eq(memberships.partyId, party.id),
+          eq(memberships.userId, user.id),
+          isNull(memberships.deletedAt),
+        ))
         .limit(1)
       if (!membership) throw new Error('Membership creation returned no row')
 
@@ -296,9 +317,6 @@ const createParty: CreateParty = async (bindings, authUserId, input) => {
         },
       }
     })
-  } catch (error) {
-    if (postgresErrorCode(error) === '23505') return { status: 'already_member' }
-    throw error
   } finally {
     await client.end()
   }
@@ -438,7 +456,7 @@ const findInvitePreview: FindInvitePreview = async (bindings, tokenHash) => {
       .groupBy(parties.id, parties.displayName)
       .limit(1)
 
-    if (!result || Number(result.occupancy) >= 10) return undefined
+    if (!result || Number(result.occupancy) >= PARTY_LIMITS.activeMembersPerParty) return undefined
     return { displayName: result.displayName, occupancy: Number(result.occupancy) }
   } finally {
     await client.end()
@@ -456,6 +474,13 @@ export const joinParty: JoinParty = async (bindings, authUserId, input) => {
         .where(and(eq(users.authUserId, authUserId), isNull(users.deletedAt)))
         .limit(1)
       if (!user) return { status: 'user_not_found' }
+
+      const [lockedUser] = await transaction
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.id, user.id), isNull(users.deletedAt)))
+        .for('update')
+      if (!lockedUser) return { status: 'user_not_found' }
 
       const [candidate] = await transaction
         .select({ partyId: invites.partyId })
@@ -502,10 +527,13 @@ export const joinParty: JoinParty = async (bindings, authUserId, input) => {
       const [existing] = await transaction
         .select({ id: memberships.id, partyId: memberships.partyId, nickname: memberships.nickname, joinedAt: memberships.joinedAt })
         .from(memberships)
-        .where(and(eq(memberships.userId, user.id), isNull(memberships.deletedAt)))
+        .where(and(
+          eq(memberships.partyId, target.id),
+          eq(memberships.userId, user.id),
+          isNull(memberships.deletedAt),
+        ))
         .limit(1)
       if (existing) {
-        if (existing.partyId !== target.id) return { status: 'already_member' }
         return {
           status: 'already_joined',
           value: {
@@ -517,11 +545,21 @@ export const joinParty: JoinParty = async (bindings, authUserId, input) => {
         }
       }
 
+      const [{ activeMemberships }] = await transaction
+        .select({ activeMemberships: sql<number>`count(*)` })
+        .from(memberships)
+        .where(and(eq(memberships.userId, user.id), isNull(memberships.deletedAt)))
+      if (Number(activeMemberships) >= PARTY_LIMITS.activeMembershipsPerUser) {
+        return { status: 'membership_limit' }
+      }
+
       const [{ occupancy }] = await transaction
         .select({ occupancy: sql<number>`count(*)` })
         .from(memberships)
         .where(and(eq(memberships.partyId, target.id), isNull(memberships.deletedAt)))
-      if (Number(occupancy) >= 10) return { status: 'invite_not_available' }
+      if (Number(occupancy) >= PARTY_LIMITS.activeMembersPerParty) {
+        return { status: 'invite_not_available' }
+      }
 
       await transaction.execute(sql`
         insert into ${memberships} (party_id, user_id, nickname)
@@ -530,7 +568,11 @@ export const joinParty: JoinParty = async (bindings, authUserId, input) => {
       const [membership] = await transaction
         .select({ id: memberships.id, nickname: memberships.nickname, joinedAt: memberships.joinedAt })
         .from(memberships)
-        .where(and(eq(memberships.userId, user.id), isNull(memberships.deletedAt)))
+        .where(and(
+          eq(memberships.partyId, target.id),
+          eq(memberships.userId, user.id),
+          isNull(memberships.deletedAt),
+        ))
         .limit(1)
       if (!membership) throw new Error('Membership creation returned no row')
 
@@ -544,9 +586,6 @@ export const joinParty: JoinParty = async (bindings, authUserId, input) => {
         },
       }
     })
-  } catch (error) {
-    if (postgresErrorCode(error) === '23505') return { status: 'already_member' }
-    throw error
   } finally {
     await client.end()
   }
@@ -785,8 +824,11 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     try {
       const result = await addParty(context.env, context.get('authUserId'), input.data)
       if (result.status === 'user_not_found') return unauthorized()
-      if (result.status === 'already_member') {
-        return context.json({ error: ApiErrorCode.ALREADY_IN_PARTY }, 409)
+      if (result.status === 'membership_limit') {
+        return context.json({ error: ApiErrorCode.PARTY_MEMBERSHIP_LIMIT }, 409)
+      }
+      if (result.status === 'ownership_limit') {
+        return context.json({ error: ApiErrorCode.PARTY_OWNERSHIP_LIMIT }, 409)
       }
 
       return context.json(serializeParty(result.value), 201)
@@ -900,6 +942,9 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
       if (result.status === 'successor_not_available') {
         return context.json({ error: ApiErrorCode.PARTY_SUCCESSOR_NOT_AVAILABLE }, 404)
       }
+      if (result.status === 'successor_ownership_limit') {
+        return context.json({ error: ApiErrorCode.PARTY_SUCCESSOR_OWNERSHIP_LIMIT }, 409)
+      }
       return context.body(null, 204)
     } catch {
       return context.json({ error: ApiErrorCode.PARTY_TRANSFER_FAILED }, 500)
@@ -915,7 +960,7 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
     try {
       const preview = await getInvitePreview(context.env, await hashInviteToken(token))
       if (!preview) return context.json({ error: ApiErrorCode.INVITE_NOT_AVAILABLE }, 404)
-      return context.json({ party: { ...preview, capacity: 10 } })
+      return context.json({ party: { ...preview, capacity: PARTY_LIMITS.activeMembersPerParty } })
     } catch {
       return context.json({ error: ApiErrorCode.INVITE_LOAD_FAILED }, 500)
     }
@@ -935,8 +980,8 @@ export const createApp = (dependencies: Partial<Dependencies> = {}) => {
       if (result.status === 'invite_not_available') {
         return context.json({ error: ApiErrorCode.INVITE_NOT_AVAILABLE }, 404)
       }
-      if (result.status === 'already_member') {
-        return context.json({ error: ApiErrorCode.ALREADY_IN_PARTY }, 409)
+      if (result.status === 'membership_limit') {
+        return context.json({ error: ApiErrorCode.PARTY_MEMBERSHIP_LIMIT }, 409)
       }
 
       return context.json(serializeParty(result.value), result.status === 'joined' ? 201 : 200)

@@ -125,7 +125,7 @@ const joining = ref(false)
 const nickname = ref('')
 const tokenAvailable = ref(true)
 const errorKey = ref<'invite.unavailable' | 'invite.loadError'>('invite.unavailable')
-const joinError = ref<'invite.unavailable' | 'party.alreadyMember' | 'party.joinError' | null>(null)
+const joinError = ref<'invite.unavailable' | 'party.membershipLimit' | 'party.joinError' | null>(null)
 const nicknameRules = computed(() => [
   (value: string) => nicknameSchema.safeParse(value).success || t('party.nicknameInvalid'),
 ])
@@ -162,8 +162,8 @@ const joinParty = async () => {
   } catch (error) {
     joinError.value = error instanceof Error && error.message === AppErrorCode.INVITE_NOT_AVAILABLE
       ? 'invite.unavailable'
-      : error instanceof Error && error.message === AppErrorCode.ALREADY_IN_PARTY
-        ? 'party.alreadyMember'
+      : error instanceof Error && error.message === AppErrorCode.PARTY_MEMBERSHIP_LIMIT
+        ? 'party.membershipLimit'
         : 'party.joinError'
   } finally {
     joining.value = false

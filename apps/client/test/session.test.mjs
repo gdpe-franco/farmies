@@ -142,7 +142,7 @@ const createFetcher = (
     if (url.endsWith('/memberships')) {
       return membershipStatus === 201 || membershipStatus === 200
         ? Response.json(joinedParty, { status: membershipStatus })
-        : Response.json({ error: membershipStatus === 404 ? 'INVITE_NOT_AVAILABLE' : membershipStatus === 409 ? 'ALREADY_IN_PARTY' : 'PARTY_JOIN_FAILED' }, { status: membershipStatus })
+        : Response.json({ error: membershipStatus === 404 ? 'INVITE_NOT_AVAILABLE' : membershipStatus === 409 ? 'PARTY_MEMBERSHIP_LIMIT' : 'PARTY_JOIN_FAILED' }, { status: membershipStatus })
     }
     if (url.endsWith('/parties/current/invite')) {
       if (init.method === 'DELETE' && inviteStatus === 204) return new Response(null, { status: 204 })
@@ -180,7 +180,7 @@ const createFetcher = (
       return partyStatus === 201
         ? Response.json(createdParty, { status: 201 })
         : Response.json(
-            { error: partyStatus === 409 ? 'ALREADY_IN_PARTY' : 'PARTY_CREATION_FAILED' },
+            { error: partyStatus === 409 ? 'PARTY_MEMBERSHIP_LIMIT' : 'PARTY_CREATION_FAILED' },
             { status: partyStatus },
           )
     }
@@ -584,11 +584,11 @@ test('Party creation', async (suite) => {
       expectedPartyRequests: 0,
     },
     {
-      name: 'reports an existing active membership',
+      name: 'reports the active membership limit',
       displayName: 'Green Friends',
       nickname: 'Fern',
       partyStatus: 409,
-      error: /ALREADY_IN_PARTY/,
+      error: /PARTY_MEMBERSHIP_LIMIT/,
       expectedPartyRequests: 1,
     },
     {
@@ -661,7 +661,7 @@ test('Party joining', async (suite) => {
   const failureCases = [
     { name: 'rejects an empty nickname before calling the API', nickname: '   ', status: 201, error: /too_small/, requests: 0 },
     { name: 'preserves an unavailable invite for a retry', nickname: 'Moss', status: 404, error: /INVITE_NOT_AVAILABLE/, requests: 1 },
-    { name: 'reports an existing membership', nickname: 'Moss', status: 409, error: /ALREADY_IN_PARTY/, requests: 1 },
+    { name: 'reports the active membership limit', nickname: 'Moss', status: 409, error: /PARTY_MEMBERSHIP_LIMIT/, requests: 1 },
   ]
 
   await suite.test('failure path', async (failurePath) => {
