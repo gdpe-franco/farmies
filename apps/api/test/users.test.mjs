@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createApp, createInviteSecret, hashInviteToken } from '../src/index.ts'
+import { createApp } from '../src/index.ts'
+import { createInviteSecret, hashInviteToken } from '../src/invites.ts'
 
 const issuer = 'https://example.supabase.co/auth/v1'
 const authUserId = '03d9d8e0-a088-4f4c-a97f-967675fb4e39'
@@ -48,6 +49,8 @@ test('authorized API endpoints', async (suite) => {
   const requestedIds = []
   const localeUpdates = []
   const partyRequests = []
+  const partyListRequests = []
+  const partyByIdRequests = []
   const accountDeleteRequests = []
   const deletePartyRequests = []
   const inviteRequests = []
@@ -72,6 +75,17 @@ test('authorized API endpoints', async (suite) => {
     isOwner: true,
     inviteActive: false,
   }
+  const partySummaries = [{
+    id: 84n,
+    displayName: 'Green Friends',
+    membershipId: 85n,
+    nickname: 'Fern',
+    role: 'owner',
+    occupancy: 4,
+    species: 'COW',
+    environment: 'PASTURE',
+    joinedAt: new Date('2026-09-11T08:00:00.000Z'),
+  }]
   let currentPartyResult = currentParty
   let inviteResult = {
     status: 'created',
@@ -127,6 +141,15 @@ test('authorized API endpoints', async (suite) => {
     findCurrentParty: async () => {
       if (currentPartyResult instanceof Error) throw currentPartyResult
       return currentPartyResult
+    },
+    findParties: async (_bindings, id) => {
+      partyListRequests.push(id)
+      return partySummaries
+    },
+    findPartyById: async (_bindings, id, partyId) => {
+      partyByIdRequests.push({ id, partyId })
+      if (partyId === 98n) throw new Error('database unavailable')
+      return partySummaries.find((party) => party.id === partyId)
     },
     findOrCreateUser: async (_bindings, id) => {
       requestedIds.push(id)
@@ -403,6 +426,54 @@ test('authorized API endpoints', async (suite) => {
         if (testCase.body) assert.deepEqual(await response.json(), testCase.body)
       })
     }
+  })
+
+  await suite.test('listing and selecting Parties', async (partyReadTests) => {
+    const summary = {
+      id: '84',
+      displayName: 'Green Friends',
+      membershipId: '85',
+      nickname: 'Fern',
+      role: 'owner',
+      occupancy: 4,
+      species: 'COW',
+      environment: 'PASTURE',
+      joinedAt: '2026-09-11T08:00:00.000Z',
+    }
+
+    const listResponse = await app.request('/parties', {
+      headers: { Authorization: `Bearer ${validToken}`, Origin: bindings.CLIENT_ORIGIN },
+    }, bindings)
+    assert.equal(listResponse.status, 200)
+    assert.equal(listResponse.headers.get('Access-Control-Allow-Origin'), bindings.CLIENT_ORIGIN)
+    assert.deepEqual(await listResponse.json(), { parties: [summary] })
+    assert.deepEqual(partyListRequests, [authUserId])
+
+    const detailResponse = await app.request('/parties/84', {
+      headers: { Authorization: `Bearer ${validToken}` },
+    }, bindings)
+    assert.equal(detailResponse.status, 200)
+    assert.deepEqual(await detailResponse.json(), { party: summary })
+
+    for (const testCase of [
+      { path: '/parties/0', status: 400, error: 'INVALID_REQUEST' },
+      { path: '/parties/9223372036854775808', status: 400, error: 'INVALID_REQUEST' },
+      { path: '/parties/99', status: 404, error: 'PARTY_NOT_FOUND' },
+      { path: '/parties/98', status: 500, error: 'PARTY_LOAD_FAILED' },
+    ]) {
+      await partyReadTests.test(testCase.path, async () => {
+        const response = await app.request(testCase.path, {
+          headers: { Authorization: `Bearer ${validToken}` },
+        }, bindings)
+        assert.equal(response.status, testCase.status)
+        assert.deepEqual(await response.json(), { error: testCase.error })
+      })
+    }
+
+    assert.deepEqual(partyByIdRequests, [84n, 99n, 98n].map((partyId) => ({
+      id: authUserId,
+      partyId,
+    })))
   })
 
   const inviteHappyCases = [
@@ -821,6 +892,8 @@ test('every protected route requires verified identity', async () => {
     ['PATCH', '/users/me'],
     ['DELETE', '/users/me'],
     ['POST', '/parties'],
+    ['GET', '/parties'],
+    ['GET', '/parties/84'],
     ['GET', '/parties/current'],
     ['DELETE', '/parties/current'],
     ['GET', '/parties/current/scene'],

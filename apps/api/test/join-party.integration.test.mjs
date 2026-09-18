@@ -4,7 +4,7 @@ import test from 'node:test'
 
 import postgres from 'postgres'
 
-import { joinParty } from '../src/index.ts'
+import { joinParty } from '../src/memberships.ts'
 import { leaveParty } from '../src/memberships.ts'
 
 if (existsSync(new URL('../.env', import.meta.url))) process.loadEnvFile(new URL('../.env', import.meta.url))

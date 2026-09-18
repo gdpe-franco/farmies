@@ -1,9 +1,18 @@
-import { and, asc, desc, eq, isNotNull, isNull, ne, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, isNotNull, isNull, ne, sql } from 'drizzle-orm'
 import type { Hyperdrive, R2Bucket } from '@cloudflare/workers-types'
 import { alias } from 'drizzle-orm/pg-core'
 
 import { openDatabase } from './db/index.ts'
-import { invites, memberAvatars, memberships, parties, users } from './db/schema.ts'
+import {
+  environments,
+  invites,
+  memberAvatars,
+  memberships,
+  parties,
+  species,
+  users,
+} from './db/schema.ts'
+import type { PartyMembership } from './parties.ts'
 import { PARTY_LIMITS } from './party-limits.ts'
 
 type LeavePartyResult = { status: 'left' | 'already_left' | 'owner_required' | 'cleanup_pending' }
@@ -36,6 +45,146 @@ export type DeleteParty = (
   bindings: { HYPERDRIVE: Hyperdrive; AVATARS: R2Bucket },
   authUserId: string,
 ) => Promise<DeletePartyResult>
+
+export const joinParty = async (
+  bindings: { HYPERDRIVE: Hyperdrive },
+  authUserId: string,
+  input: { inviteTokenHash: string; nickname: string },
+): Promise<
+  | { status: 'joined' | 'already_joined'; value: PartyMembership }
+  | { status: 'membership_limit' | 'invite_not_available' | 'user_not_found' }
+> => {
+  const { client, database } = openDatabase(bindings)
+
+  try {
+    return await database.transaction(async (transaction) => {
+      const [user] = await transaction
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.authUserId, authUserId), isNull(users.deletedAt)))
+        .limit(1)
+      if (!user) return { status: 'user_not_found' }
+
+      const [lockedUser] = await transaction
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.id, user.id), isNull(users.deletedAt)))
+        .for('update')
+      if (!lockedUser) return { status: 'user_not_found' }
+
+      const [candidate] = await transaction
+        .select({ partyId: invites.partyId })
+        .from(invites)
+        .innerJoin(parties, and(eq(parties.id, invites.partyId), isNull(parties.deletedAt)))
+        .where(and(
+          eq(invites.tokenHash, input.inviteTokenHash),
+          isNull(invites.revokedAt),
+          isNull(invites.deletedAt),
+          gt(invites.expiresAt, sql`now()`),
+        ))
+        .limit(1)
+      if (!candidate) return { status: 'invite_not_available' }
+
+      await transaction.execute(sql`
+        select id from ${parties}
+        where id = ${candidate.partyId} and deleted_at is null
+        for update
+      `)
+
+      const [target] = await transaction
+        .select({
+          id: parties.id,
+          ownerUserId: parties.ownerUserId,
+          displayName: parties.displayName,
+          species: species.code,
+          environment: environments.code,
+          createdAt: parties.createdAt,
+        })
+        .from(invites)
+        .innerJoin(parties, and(eq(parties.id, invites.partyId), isNull(parties.deletedAt)))
+        .innerJoin(species, eq(species.id, parties.speciesId))
+        .innerJoin(environments, eq(environments.id, parties.environmentId))
+        .where(and(
+          eq(parties.id, candidate.partyId),
+          eq(invites.tokenHash, input.inviteTokenHash),
+          isNull(invites.revokedAt),
+          isNull(invites.deletedAt),
+          gt(invites.expiresAt, sql`now()`),
+        ))
+        .limit(1)
+      if (!target) return { status: 'invite_not_available' }
+
+      const [existing] = await transaction
+        .select({
+          id: memberships.id,
+          partyId: memberships.partyId,
+          nickname: memberships.nickname,
+          joinedAt: memberships.joinedAt,
+        })
+        .from(memberships)
+        .where(and(
+          eq(memberships.partyId, target.id),
+          eq(memberships.userId, user.id),
+          isNull(memberships.deletedAt),
+        ))
+        .limit(1)
+      if (existing) {
+        return {
+          status: 'already_joined',
+          value: {
+            party: target,
+            membership: existing,
+            isOwner: target.ownerUserId === user.id,
+            inviteActive: true,
+          },
+        }
+      }
+
+      const [{ activeMemberships }] = await transaction
+        .select({ activeMemberships: sql<number>`count(*)` })
+        .from(memberships)
+        .where(and(eq(memberships.userId, user.id), isNull(memberships.deletedAt)))
+      if (Number(activeMemberships) >= PARTY_LIMITS.activeMembershipsPerUser) {
+        return { status: 'membership_limit' }
+      }
+
+      const [{ occupancy }] = await transaction
+        .select({ occupancy: sql<number>`count(*)` })
+        .from(memberships)
+        .where(and(eq(memberships.partyId, target.id), isNull(memberships.deletedAt)))
+      if (Number(occupancy) >= PARTY_LIMITS.activeMembersPerParty) {
+        return { status: 'invite_not_available' }
+      }
+
+      await transaction.execute(sql`
+        insert into ${memberships} (party_id, user_id, nickname)
+        values (${target.id}, ${user.id}, ${input.nickname})
+      `)
+      const [membership] = await transaction
+        .select({ id: memberships.id, nickname: memberships.nickname, joinedAt: memberships.joinedAt })
+        .from(memberships)
+        .where(and(
+          eq(memberships.partyId, target.id),
+          eq(memberships.userId, user.id),
+          isNull(memberships.deletedAt),
+        ))
+        .limit(1)
+      if (!membership) throw new Error('Membership creation returned no row')
+
+      return {
+        status: 'joined',
+        value: {
+          party: target,
+          membership,
+          isOwner: target.ownerUserId === user.id,
+          inviteActive: true,
+        },
+      }
+    })
+  } finally {
+    await client.end()
+  }
+}
 
 export const findTransferCandidates: FindTransferCandidates = async (bindings, authUserId) => {
   const { client, database } = openDatabase(bindings)

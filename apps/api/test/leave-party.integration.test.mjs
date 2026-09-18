@@ -5,7 +5,7 @@ import test from 'node:test'
 import postgres from 'postgres'
 
 import { manageAvatar } from '../src/avatars.ts'
-import { joinParty } from '../src/index.ts'
+import { joinParty } from '../src/memberships.ts'
 import { leaveParty } from '../src/memberships.ts'
 import { findScene } from '../src/scene.ts'
 import { webp } from './fixtures/webp.mjs'
