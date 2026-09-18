@@ -63,6 +63,25 @@ export const registerPartyRoutes = (app: FarmiesApp, operations: Operations) => 
     }
   })
 
+  app.get('/parties/:partyId/scene', async (context) => {
+    const parsedPartyId = bigintIdSchema.safeParse(context.req.param('partyId'))
+    if (!parsedPartyId.success) return context.json({ error: ApiErrorCode.INVALID_REQUEST }, 400)
+
+    context.header('Cache-Control', 'private, no-store')
+    context.header('Date', new Date().toUTCString())
+    try {
+      const scene = await operations.findScene(
+        context.env,
+        context.get('authUserId'),
+        BigInt(parsedPartyId.data),
+      )
+      if (!scene) return context.json({ error: ApiErrorCode.PARTY_NOT_FOUND }, 404)
+      return context.json(scene)
+    } catch {
+      return context.json({ error: ApiErrorCode.SCENE_LOAD_FAILED }, 500)
+    }
+  })
+
   app.post('/parties', async (context) => {
     const body = await context.req.json().catch(() => undefined)
     const input = partyRequestSchema.safeParse(body)

@@ -10,3 +10,17 @@ export const openDatabase = (bindings: { HYPERDRIVE: Hyperdrive }) => {
   })
   return { client, database: drizzle(client) }
 }
+
+type Database = ReturnType<typeof drizzle>
+
+export const withDatabase = async <T>(
+  bindings: { HYPERDRIVE: Hyperdrive },
+  operation: (database: Database) => Promise<T>,
+) => {
+  const { client, database } = openDatabase(bindings)
+  try {
+    return await operation(database)
+  } finally {
+    await client.end()
+  }
+}

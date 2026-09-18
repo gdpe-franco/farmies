@@ -2,7 +2,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Hyperdrive, R2Bucket } from '@cloudflare/workers-types'
 import { alias } from 'drizzle-orm/pg-core'
 
-import { openDatabase } from './db/index.ts'
+import { withDatabase } from './db/index.ts'
 import { memberAvatars, memberships, parties, users } from './db/schema.ts'
 
 // Check the bounded, single-image WebP container; face detection is a client UX check.
@@ -49,7 +49,12 @@ export const validateAvatar = (buffer: ArrayBuffer) => {
   return imageSeen
 }
 
-type AvatarInput = { membershipId: bigint; action: 'read' | 'save' | 'delete'; bytes?: ArrayBuffer }
+type AvatarInput = {
+  partyId?: bigint
+  membershipId: bigint
+  action: 'read' | 'save' | 'delete'
+  bytes?: ArrayBuffer
+}
 type AvatarResult =
   | { status: 'not_found' | 'forbidden' | 'deleted' | 'cleanup_pending' }
   | { status: 'saved'; version: number }
@@ -61,10 +66,9 @@ export type ManageAvatar = (
 ) => Promise<AvatarResult>
 
 export const manageAvatar: ManageAvatar = async (bindings, authUserId, input) => {
-  const { client, database } = openDatabase(bindings)
   let stage = 'authorization'
   try {
-    return await database.transaction(async (transaction): Promise<AvatarResult> => {
+    return await withDatabase(bindings, (database) => database.transaction(async (transaction): Promise<AvatarResult> => {
       const requester = alias(memberships, 'requester')
       const targetUser = alias(users, 'target_user')
       const party = alias(parties, 'avatar_party')
@@ -74,7 +78,11 @@ export const manageAvatar: ManageAvatar = async (bindings, authUserId, input) =>
         .innerJoin(party, and(eq(party.id, memberships.partyId), isNull(party.deletedAt)))
         .innerJoin(requester, and(eq(requester.partyId, party.id), isNull(requester.deletedAt)))
         .innerJoin(users, and(eq(users.id, requester.userId), eq(users.authUserId, authUserId), isNull(users.deletedAt)))
-        .where(and(eq(memberships.id, input.membershipId), isNull(memberships.deletedAt)))
+        .where(and(
+          eq(memberships.id, input.membershipId),
+          input.partyId === undefined ? undefined : eq(party.id, input.partyId),
+          isNull(memberships.deletedAt),
+        ))
         .limit(1)
       if (!candidate) return { status: 'not_found' }
       await transaction.execute(sql`
@@ -89,7 +97,11 @@ export const manageAvatar: ManageAvatar = async (bindings, authUserId, input) =>
         .innerJoin(targetUser, and(eq(targetUser.id, memberships.userId), isNull(targetUser.deletedAt)))
         .innerJoin(requester, and(eq(requester.partyId, party.id), isNull(requester.deletedAt)))
         .innerJoin(users, and(eq(users.id, requester.userId), eq(users.authUserId, authUserId), isNull(users.deletedAt)))
-        .where(and(eq(memberships.id, input.membershipId), isNull(memberships.deletedAt)))
+        .where(and(
+          eq(memberships.id, input.membershipId),
+          input.partyId === undefined ? undefined : eq(party.id, input.partyId),
+          isNull(memberships.deletedAt),
+        ))
       if (!target) return { status: 'not_found' }
       if (input.action !== 'read' && target.id !== target.requesterId) return { status: 'forbidden' }
 
@@ -129,7 +141,7 @@ export const manageAvatar: ManageAvatar = async (bindings, authUserId, input) =>
       const [avatar] = await transaction.select({ version: memberAvatars.version }).from(memberAvatars)
         .where(eq(memberAvatars.membershipId, target.id))
       return { status: 'saved', version: avatar.version }
-    })
+    }))
   } catch (error) {
     const failure = error as { name?: string; code?: string; cause?: { code?: string } }
     console.error('Avatar operation failed', {
@@ -138,7 +150,5 @@ export const manageAvatar: ManageAvatar = async (bindings, authUserId, input) =>
       databaseCode: failure.code ?? failure.cause?.code,
     })
     throw error
-  } finally {
-    await client.end()
   }
 }

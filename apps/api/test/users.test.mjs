@@ -897,6 +897,7 @@ test('every protected route requires verified identity', async () => {
     ['GET', '/parties/current'],
     ['DELETE', '/parties/current'],
     ['GET', '/parties/current/scene'],
+    ['GET', '/parties/84/scene'],
     ['POST', '/parties/current/invite'],
     ['DELETE', '/parties/current/invite'],
     ['DELETE', '/parties/current/membership'],
@@ -907,6 +908,9 @@ test('every protected route requires verified identity', async () => {
     ['GET', '/parties/current/avatars/85'],
     ['PUT', '/parties/current/avatars/85'],
     ['DELETE', '/parties/current/avatars/85'],
+    ['GET', '/parties/84/avatars/85'],
+    ['PUT', '/parties/84/avatars/85'],
+    ['DELETE', '/parties/84/avatars/85'],
   ]
 
   for (const [method, path] of routes) {

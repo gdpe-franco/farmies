@@ -62,6 +62,7 @@ test('private avatar persistence', { skip: !adminUrl || !runtimeUrl }, async (su
   })
   await clean()
   try {
+    const partyIds = []
     const ids = await admin.begin(async (sql) => {
       await sql`insert into auth.users (id) select * from unnest(${authIds}::uuid[])`
       const users = await sql`insert into farmies.users (auth_user_id) select * from unnest(${authIds}::uuid[]) returning id, auth_user_id`
@@ -74,6 +75,7 @@ test('private avatar persistence', { skip: !adminUrl || !runtimeUrl }, async (su
           const [party] = await sql`insert into farmies.parties (owner_user_id, display_name, species_id, environment_id)
             values (${user.id}, 'Avatar fixture', ${catalog.species_id}, ${catalog.environment_id}) returning id`
           sharedParty = party.id
+          partyIds.push(BigInt(party.id))
         }
         const [member] = await sql`insert into farmies.memberships (party_id, user_id, nickname)
           values (${sharedParty}, ${user.id}, 'Friend') returning id`
@@ -81,18 +83,25 @@ test('private avatar persistence', { skip: !adminUrl || !runtimeUrl }, async (su
       }
       return ids
     })
-    const operation = (action, actor = 0, target = 0, bytes = webp()) => manageAvatar(bindings, authIds[actor], {
-      action, membershipId: ids[target], bytes: action === 'save' ? bytes : undefined,
+    const operation = (
+      action,
+      actor = 0,
+      target = 0,
+      bytes = webp(),
+      partyId = target < 2 ? partyIds[0] : partyIds[1],
+    ) => manageAvatar(bindings, authIds[actor], {
+      action, partyId, membershipId: ids[target], bytes: action === 'save' ? bytes : undefined,
     })
     await suite.test('happy path', async () => {
       assert.deepEqual(await operation('save'), { status: 'saved', version: 1 })
-      const scene = await findScene(bindings, authIds[1])
+      const scene = await findScene(bindings, authIds[1], partyIds[0])
       assert.equal(scene.party.species, 'COW')
       assert.equal(scene.party.environment.definition.scene, 'PASTURE')
       assert.deepEqual(scene.members.map(member => member.membershipId), ids.slice(0, 2).map(String))
       assert.deepEqual(scene.members.map(member => member.avatarVersion), [1, null])
-      assert.deepEqual((await findScene(bindings, authIds[2])).members.map(member => member.membershipId), [String(ids[2])])
-      assert.equal(await findScene(bindings, '00000000-0000-4000-8000-000000009099'), undefined)
+      assert.deepEqual((await findScene(bindings, authIds[2], partyIds[1])).members.map(member => member.membershipId), [String(ids[2])])
+      assert.equal(await findScene(bindings, authIds[1], partyIds[1]), undefined)
+      assert.equal(await findScene(bindings, '00000000-0000-4000-8000-000000009099', partyIds[0]), undefined)
       assert.deepEqual((await operation('read', 1)).bytes, webp(), 'another current member may read')
       const replacements = await Promise.all([operation('save'), operation('save')])
       assert.deepEqual(replacements.map((value) => value.version).sort(), [2, 3])
@@ -118,15 +127,16 @@ test('private avatar persistence', { skip: !adminUrl || !runtimeUrl }, async (su
       })}`
       const signature = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, keys.privateKey, new TextEncoder().encode(unsigned))
       const headers = { Authorization: `Bearer ${unsigned}.${Buffer.from(signature).toString('base64url')}`, 'Content-Type': 'image/webp' }
-      const url = `/parties/current/avatars/${ids[0]}`
+      const url = `/parties/${partyIds[0]}/avatars/${ids[0]}`
       const saved = await harness.fetch(url, { method: 'PUT', headers, body: webp() })
       assert.equal(saved.status, 200, 'actual Worker request saves processed bytes')
       const image = await harness.fetch(url, { headers })
       assert.equal(image.status, 200)
       assert.deepEqual(await image.arrayBuffer(), webp())
-      const roster = await harness.fetch('/parties/current/scene', { headers })
+      const roster = await harness.fetch(`/parties/${partyIds[0]}/scene`, { headers })
       assert.equal(roster.status, 200)
       assert.equal((await roster.json()).members.length, 2)
+      assert.equal((await harness.fetch(`/parties/${partyIds[1]}/avatars/${ids[0]}`, { headers })).status, 404)
     })
     await suite.test('failure path', async () => {
       for (const row of [
@@ -134,7 +144,8 @@ test('private avatar persistence', { skip: !adminUrl || !runtimeUrl }, async (su
         { action: 'save', actor: 1, target: 0, status: 'forbidden' },
         { action: 'delete', actor: 1, target: 0, status: 'forbidden' },
         { action: 'read', actor: 0, target: 1, status: 'not_found' },
-      ]) assert.equal((await operation(row.action, row.actor, row.target)).status, row.status)
+        { action: 'read', actor: 0, target: 0, partyId: partyIds[1], status: 'not_found' },
+      ]) assert.equal((await operation(row.action, row.actor, row.target, undefined, row.partyId)).status, row.status)
       await assert.rejects(operation('save', 0, 0, new ArrayBuffer(0)), /Invalid processed avatar/)
       failPut = true
       await assert.rejects(operation('save'), /R2 unavailable/)
@@ -166,7 +177,7 @@ test('private avatar persistence', { skip: !adminUrl || !runtimeUrl }, async (su
           await admin`update farmies.parties set deleted_at = now() where id = (select party_id from farmies.memberships where id = ${ids[0].toString()})`
         }
         assert.equal((await operation('read', 1)).status, 'not_found', `inactive ${row.table} denies read`)
-        const scene = await findScene(bindings, authIds[1])
+        const scene = await findScene(bindings, authIds[1], partyIds[0])
         if (row.actor === 1 || row.table === 'parties') assert.equal(scene, undefined)
         else assert.deepEqual(scene.members.map(member => member.membershipId), [String(ids[1])])
         if (row.table === 'users') {

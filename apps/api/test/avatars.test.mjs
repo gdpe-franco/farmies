@@ -54,22 +54,32 @@ test('private avatar HTTP routes', async (suite) => {
     let scene = { party: { id: '84', species: 'COW', environment: { code: 'PASTURE', definition: {
       version: 1, scene: 'PASTURE', zones: [], props: [], capabilities: [],
     } } }, members: [{ membershipId: '85', nickname: 'Fern', joinedAt: '2026-09-11T08:00:00.000Z', avatarVersion: null }] }
-    const sceneApp = createApp({ findScene: async (_env, id) => { assert.equal(id, authId); return scene } })
-    const get = (headers = { Authorization: authorization }) => sceneApp.request('/parties/current/scene', { headers }, bindings)
+    const sceneApp = createApp({ findScene: async (_env, id, partyId) => {
+      assert.equal(id, authId)
+      if (partyId !== undefined) assert.equal(partyId, 84n)
+      return scene
+    } })
+    const get = (headers = { Authorization: authorization }) => sceneApp.request('/parties/84/scene', { headers }, bindings)
     const response = await get()
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('Cache-Control'), 'private, no-store')
     assert.deepEqual(await response.json(), scene)
+    assert.equal((await sceneApp.request('/parties/current/scene', {
+      headers: { Authorization: authorization },
+    }, bindings)).status, 200)
     assert.equal((await get({})).status, 401)
+    assert.equal((await sceneApp.request('/parties/0/scene', {
+      headers: { Authorization: authorization },
+    }, bindings)).status, 400)
     scene = undefined
     assert.equal((await get()).status, 404)
     const failingApp = createApp({ findScene: async () => { throw new Error('Database unavailable') } })
-    const failure = await failingApp.request('/parties/current/scene', { headers: { Authorization: authorization } }, bindings)
+    const failure = await failingApp.request('/parties/84/scene', { headers: { Authorization: authorization } }, bindings)
     assert.equal(failure.status, 500)
     assert.deepEqual(await failure.json(), { error: 'SCENE_LOAD_FAILED' })
     assert.equal(environmentDefinitionSchema.safeParse({ version: 2, scene: 'PASTURE', zones: [], props: [], capabilities: [] }).success, false)
   })
-  const request = (method, id = '85', body, headers = {}) => app.request(`/parties/current/avatars/${id}`, {
+  const request = (method, id = '85', body, headers = {}, partyId = '84') => app.request(`/parties/${partyId}/avatars/${id}`, {
     method, body, headers: { Authorization: authorization, 'Content-Type': 'image/webp', ...headers },
   }, bindings)
 
@@ -78,6 +88,7 @@ test('private avatar HTTP routes', async (suite) => {
     assert.equal(response.status, 200)
     assert.deepEqual(await response.json(), { version: 1 })
     assert.equal(calls[0].id, authId)
+    assert.equal(calls[0].input.partyId, 84n)
     assert.equal(calls[0].input.membershipId, 85n)
     result = { status: 'read', bytes: webp() }
     const image = await request('GET')
@@ -85,6 +96,11 @@ test('private avatar HTTP routes', async (suite) => {
     assert.equal(image.headers.get('Content-Type'), 'image/webp')
     assert.equal(image.headers.get('X-Content-Type-Options'), 'nosniff')
     assert.deepEqual(await image.arrayBuffer(), webp())
+    const legacyImage = await app.request('/parties/current/avatars/85', {
+      headers: { Authorization: authorization },
+    }, bindings)
+    assert.equal(legacyImage.status, 200)
+    assert.equal(calls.at(-1).input.partyId, undefined)
     result = { status: 'deleted' }
     assert.equal((await request('DELETE')).status, 204)
     const preflight = await request('OPTIONS', '85', undefined, {
@@ -99,12 +115,14 @@ test('private avatar HTTP routes', async (suite) => {
       { method: 'GET', headers: { Authorization: '' }, status: 401 },
       { method: 'GET', id: '9223372036854775808', status: 400 },
       { method: 'GET', id: '0', status: 400 },
+      { method: 'GET', partyId: '0', status: 400 },
+      { method: 'GET', partyId: '9223372036854775808', status: 400 },
       { method: 'PUT', body: '{}', headers: { 'Content-Type': 'application/json' }, status: 415 },
       { method: 'PUT', body: new ArrayBuffer(524_289), status: 413 },
       { method: 'PUT', body: 'not-webp', status: 400 },
     ]) {
       const count = calls.length
-      assert.equal((await request(row.method, row.id, row.body, row.headers)).status, row.status)
+      assert.equal((await request(row.method, row.id, row.body, row.headers, row.partyId)).status, row.status)
       assert.equal(calls.length, count, 'invalid requests never reach persistence')
     }
     for (const row of [

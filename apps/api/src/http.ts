@@ -15,6 +15,7 @@ export type Variables = {
   authUserId: string
 }
 
-export type FarmiesApp = Hono<{ Bindings: Bindings; Variables: Variables }>
+export type AppEnv = { Bindings: Bindings; Variables: Variables }
+export type FarmiesApp = Hono<AppEnv>
 
 export const unauthorized = () => new Response('Unauthorized', { status: 401 })

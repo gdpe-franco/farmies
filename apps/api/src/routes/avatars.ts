@@ -1,18 +1,24 @@
 import { bodyLimit } from 'hono/body-limit'
+import type { Handler } from 'hono'
 
 import { validateAvatar } from '../avatars.ts'
 import { ApiErrorCode } from '../error-codes.ts'
-import type { FarmiesApp } from '../http.ts'
+import type { AppEnv, FarmiesApp } from '../http.ts'
 import type { Operations } from '../operations.ts'
 import { bigintIdSchema } from './validation.ts'
 
 export const registerAvatarRoutes = (app: FarmiesApp, operations: Operations) => {
-  app.use('/parties/current/avatars/*', bodyLimit({
+  app.use('/parties/:partyId/avatars/*', bodyLimit({
     maxSize: 524_288,
     onError: (context) => context.json({ error: ApiErrorCode.AVATAR_TOO_LARGE }, 413),
   }))
 
-  app.on(['GET', 'PUT', 'DELETE'], '/parties/current/avatars/:membershipId', async (context) => {
+  const handleAvatar: Handler<AppEnv> = async (context) => {
+    const partyId = context.req.param('partyId')
+    const parsedPartyId = partyId === undefined ? undefined : bigintIdSchema.safeParse(partyId)
+    if (parsedPartyId && !parsedPartyId.success) {
+      return context.json({ error: ApiErrorCode.INVALID_REQUEST }, 400)
+    }
     const parsedMembershipId = bigintIdSchema.safeParse(context.req.param('membershipId'))
     if (!parsedMembershipId.success) {
       return context.json({ error: ApiErrorCode.INVALID_REQUEST }, 400)
@@ -30,6 +36,7 @@ export const registerAvatarRoutes = (app: FarmiesApp, operations: Operations) =>
     context.header('Cache-Control', 'private, no-store')
     try {
       const result = await operations.manageAvatar(context.env, context.get('authUserId'), {
+        partyId: parsedPartyId?.success ? BigInt(parsedPartyId.data) : undefined,
         membershipId: BigInt(parsedMembershipId.data),
         action: context.req.method === 'PUT'
           ? 'save'
@@ -54,5 +61,8 @@ export const registerAvatarRoutes = (app: FarmiesApp, operations: Operations) =>
     } catch {
       return context.json({ error: ApiErrorCode.AVATAR_OPERATION_FAILED }, 500)
     }
-  })
+  }
+
+  app.on(['GET', 'PUT', 'DELETE'], '/parties/current/avatars/:membershipId', handleAvatar)
+  app.on(['GET', 'PUT', 'DELETE'], '/parties/:partyId/avatars/:membershipId', handleAvatar)
 }
